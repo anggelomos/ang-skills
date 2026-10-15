@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en" data-config-theme="{{theme}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>Grill session</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;600&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  // theme before first paint: the server fills in config.json's "theme"; "system" follows the OS
+  const configTheme = document.documentElement.dataset.configTheme;
+  document.documentElement.dataset.theme = configTheme === "light" || configTheme === "dark" ? configTheme
+    : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --paper: #fbf6ef;
+    --card: #fffdfa;
+    --answered: #f8f1e8;
+    --edge: #eadbca;
+    --edge-lo: #dcc6ae;
+    --ink: #3b2418;
+    --ink-dim: #8a6b57;
+    --placeholder: #b39a88;
+    --ember: #dd5f1c;
+    --ember-lo: #b2471a;
+    --ember-ink: #b2471a;
+    --ember-hi: #ee8a4c;
+    --ember-soft: #fbe6d4;
+    --ember-ring: rgba(221,95,28,.08);
+    --flame: #f2b440;
+    --steel: #cdbcae;
+    --steel-lo: #b3a08f;
+    --px: 3px;
+    --display: "Pixelify Sans", "Space Grotesk", system-ui, sans-serif;
+  }
+  /* dark: same warm palette, turned down. Bevel edges flip so the light edge stays on top */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --paper: #1b1411;
+    --card: #241b16;
+    --answered: #1f1713;
+    --edge: #3a2c23;
+    --edge-lo: #110c0a;
+    --ink: #f0e3d5;
+    --ink-dim: #a68d7b;
+    --placeholder: #76604f;
+    --ember: #e2692a;
+    --ember-lo: #9a3d14;
+    --ember-ink: #f29b64;
+    --ember-hi: #f0955c;
+    --ember-soft: #3a2218;
+    --ember-ring: rgba(226,105,42,.12);
+    --steel: #5c4c41;
+    --steel-lo: #40342c;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font: 400 17px/1.55 "Space Grotesk", system-ui, sans-serif;
+    background: var(--paper);
+    padding-bottom: 88px; /* room for the fixed button bar, so the end of the page sits just above it */
+  }
+  code { font: 500 .92em ui-monospace, monospace; color: var(--ember-ink); background: var(--ember-soft); padding: 1px 5px; }
+
+  .wrap { width: min(880px, 100% - 40px); margin: 0 auto; }
+  .layout { display: grid; grid-template-columns: 96px 1fr; gap: 32px; align-items: start; }
+
+  header { padding: 56px 0 36px 128px; }
+
+  /* light/dark toggle, top right of the page */
+  .theme-toggle {
+    position: absolute; top: 20px; right: 20px; z-index: 6; width: 40px; height: 40px; padding: 0; margin: 3px;
+    display: grid; place-items: center; cursor: pointer; border: 0; background: var(--card);
+    box-shadow: 0 -3px 0 0 var(--edge), 0 3px 0 0 var(--edge-lo), -3px 0 0 0 var(--edge), 3px 0 0 0 var(--edge-lo);
+  }
+  .theme-toggle:hover { background: var(--ember-soft); }
+  .theme-toggle:focus-visible { outline: 3px dashed var(--ink); outline-offset: 5px; }
+  .theme-toggle .sun, :root[data-theme="dark"] .theme-toggle .moon { display: none; }
+  :root[data-theme="dark"] .theme-toggle .sun { display: block; }
+  header h1 { margin: 0; font: 600 52px/1.05 var(--display); color: var(--ink); letter-spacing: -.01em; }
+  header p { margin: 10px 0 0; font-size: 20px; font-weight: 500; line-height: 1.2; color: var(--ember); }
+
+  /* the skewer is the progress meter: one chunk per question, cooked once answered */
+  .rail { position: sticky; top: 32px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .tally { margin: 0; font-size: 14px; line-height: 1.3; color: var(--ink-dim); text-align: center; }
+  .tally b { font-size: 22px; font-weight: 600; color: var(--ink); }
+  .skewer { position: relative; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 34px 0 40px; }
+  .skewer::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: 14px; width: 6px; margin-left: -3px;
+    background: var(--steel); box-shadow: inset -3px 0 0 var(--steel-lo);
+  }
+  .skewer::after {
+    content: ""; position: absolute; left: 50%; bottom: 0; margin-left: -7px;
+    border-top: 14px solid var(--steel); border-left: 7px solid transparent; border-right: 7px solid transparent;
+  }
+  .skewer .ring { position: absolute; top: -6px; left: 50%; margin-left: -12px; width: 24px; height: 24px; border: 5px solid var(--steel); }
+  .chunk { position: relative; background: none; border: 0; padding: 0; cursor: pointer; line-height: 0; }
+  .chunk svg { display: block; }
+  .chunk .cooked { position: absolute; inset: 0; opacity: 0; }
+  .chunk.is-done .cooked { opacity: 1; }
+  .chunk.is-here { outline: 3px solid var(--ember); outline-offset: 4px; }
+  .chunk:focus-visible { outline: 3px dashed var(--ink); outline-offset: 4px; }
+
+  /* grate slab */
+  .q {
+    position: relative;
+    margin: 0 var(--px) 32px;
+    padding: 24px 28px 26px 64px;
+    background: var(--card);
+    box-shadow:
+      0 calc(var(--px) * -1) 0 0 var(--edge),
+      0 var(--px) 0 0 var(--edge-lo),
+      calc(var(--px) * -1) 0 0 0 var(--edge),
+      var(--px) 0 0 0 var(--edge-lo);
+  }
+  .q.is-current {
+    box-shadow:
+      0 calc(var(--px) * -1) 0 0 var(--ember),
+      0 var(--px) 0 0 var(--ember),
+      calc(var(--px) * -1) 0 0 0 var(--ember),
+      var(--px) 0 0 0 var(--ember),
+      0 0 0 10px var(--ember-ring);
+  }
+  .q.is-answered { background-color: var(--answered); }
+  .q.is-answered .q-title, .q.is-answered .q-body { color: var(--ink-dim); }
+  .q-id {
+    position: absolute; left: 0; top: 24px; width: 40px; text-align: center;
+    font-size: 14px; font-weight: 600; line-height: 1.7; color: var(--ember-ink); background: var(--ember-soft);
+  }
+  .q.is-answered .q-id { color: var(--ink-dim); background: var(--edge); }
+  .q-check { position: absolute; right: 20px; top: 22px; opacity: 0; transition: opacity .1s steps(1); }
+  .q.is-answered .q-check { opacity: 1; }
+  .q-title { margin: 0 32px 8px 0; font-size: 22px; line-height: 1.3; font-weight: 600; }
+  .q-body { margin: 0 0 16px; max-width: 62ch; }
+  .rec { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 18px; color: var(--ember-ink); font-weight: 500; }
+  .rec svg { flex: none; margin-top: 5px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 10px 14px; margin: 0 0 16px; }
+  .chip {
+    font: inherit; font-size: 15px; color: var(--ink); cursor: pointer;
+    background: var(--paper); border: 0; padding: 6px 14px; margin: 3px;
+    box-shadow: 0 -3px 0 0 var(--edge), 0 3px 0 0 var(--edge-lo), -3px 0 0 0 var(--edge), 3px 0 0 0 var(--edge-lo);
+  }
+  .chip kbd { font: inherit; font-weight: 600; color: var(--ink-dim); margin-right: 8px; }
+  .chip:hover { background: var(--ember-soft); }
+  .chip[aria-pressed="true"] {
+    background: var(--ember); color: #fff;
+    box-shadow: 0 -3px 0 0 var(--ember-hi), 0 3px 0 0 var(--ember-lo), -3px 0 0 0 var(--ember-hi), 3px 0 0 0 var(--ember-lo);
+  }
+  .chip[aria-pressed="true"] kbd { color: #ffe0c8; }
+  .chip:focus-visible { outline: 3px dashed var(--ink); outline-offset: 5px; }
+
+  textarea {
+    display: block; width: 100%; min-height: 50px; resize: vertical; field-sizing: content; overflow: hidden;
+    font: inherit; color: var(--ink); background: var(--paper);
+    border: 0; padding: 12px 14px;
+    box-shadow: inset 3px 3px 0 var(--edge);
+  }
+  textarea::placeholder { color: var(--placeholder); }
+  textarea:focus { outline: 3px solid var(--ember); outline-offset: 0; }
+
+  .controls {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+    padding: 28px 0 28px;
+    background: linear-gradient(transparent, var(--paper) 40%);
+  }
+  .controls .hint, .btn { white-space: nowrap; }
+  .controls .wrap { display: flex; gap: 14px; align-items: center; justify-content: flex-end; padding-left: 128px; } /* lines up with the question tiles */
+  .controls .hint { margin-right: auto; color: var(--ink-dim); font-size: 12px; }
+  .controls .hint kbd { font: inherit; font-weight: 500; color: var(--ink); background: var(--card); box-shadow: 0 0 0 2px var(--edge); padding: 0 5px; margin: 0 4px 0 10px; }
+  .controls .hint kbd:first-child { margin-left: 0; }
+  .btn {
+    font: 600 16px "Space Grotesk", system-ui, sans-serif; cursor: pointer; border: 0; padding: 10px 22px; margin: 3px;
+    color: var(--ink); background: var(--card);
+    box-shadow: 0 -3px 0 0 var(--edge), 0 3px 0 0 var(--edge-lo), -3px 0 0 0 var(--edge), 3px 0 0 0 var(--edge-lo);
+  }
+  .btn:hover { background: var(--ember-soft); }
+  .btn-hot {
+    color: #fff; background: var(--ember);
+    box-shadow: 0 -3px 0 0 var(--ember-hi), 0 3px 0 0 var(--ember-lo), -3px 0 0 0 var(--ember-hi), 3px 0 0 0 var(--ember-lo);
+  }
+  .btn-hot:hover { background: var(--ember-hi); }
+  .btn:active { transform: translateY(3px); }
+  .btn:focus-visible { outline: 3px dashed var(--ink); outline-offset: 5px; }
+  .btn[data-state="copied"]::after { content: " ✓"; }
+
+  .sent, .typing-bar { display: none; }
+  /* once the round is sent: the note appears after the last question, and Round done turns into a loader */
+  body.is-submitted .sent, body.is-empty .sent, body.is-finished .sent {
+    display: block; width: fit-content; margin: 0 auto; padding: 12px 18px; text-align: center; background: var(--ember-soft); color: var(--ember-ink); font-weight: 500;
+    box-shadow: inset 3px 0 0 var(--ember);
+  }
+  .btn-hot .when-sent, body.is-submitted .btn-hot .when-open { display: none; }
+  body.is-submitted .btn-hot .when-sent { display: inline-flex; align-items: center; gap: 10px; }
+  body.is-submitted .btn-hot[data-action="done"] { pointer-events: none; }
+  .loader { display: inline-flex; gap: 4px; }
+  .loader i { width: 6px; height: 6px; background: #fff; opacity: .3; animation: pixel-blink .9s steps(1) infinite; }
+  .loader i:nth-child(2) { animation-delay: .3s; }
+  .loader i:nth-child(3) { animation-delay: .6s; }
+  @keyframes pixel-blink { 0%, 33% { opacity: 1; } 34%, 100% { opacity: .3; } }
+
+  @media (max-width: 600px) {
+    body { font-size: 16px; }
+    body { padding-bottom: 0; }
+    /* compact title so the first question is on screen without scrolling */
+    header { padding: 20px 52px 8px 0; display: block; }
+    .theme-toggle { top: 16px; right: 14px; width: 36px; height: 36px; }
+    header h1 { font-size: 32px; line-height: 1.1; }
+    header p { margin-top: 6px; font-size: 16px; }
+    .layout { display: block; }
+
+    /* the skewer turns horizontal and sticks to the top */
+    .rail {
+      top: 0; z-index: 4; flex-direction: row; justify-content: space-between; gap: 12px;
+      margin: 0 -20px 20px; padding: 14px 20px; background: var(--paper); box-shadow: 0 3px 0 var(--edge);
+    }
+    .tally { order: 2; font-size: 13px; white-space: nowrap; }
+    .tally b { font-size: 18px; }
+    .tally br, .tally span { display: none; }
+    .skewer { flex-direction: row; gap: 8px; padding: 0 26px 0 30px; }
+    .chunk svg { width: 24px; height: 24px; }
+    .skewer::before { left: 0; right: 14px; top: 50%; bottom: auto; width: auto; height: 6px; margin: -3px 0 0; box-shadow: inset 0 -3px 0 var(--steel-lo); }
+    .skewer::after { left: auto; right: 0; top: 50%; bottom: auto; margin: -7px 0 0; border: 7px solid transparent; border-right: 0; border-left: 14px solid var(--steel); }
+    .skewer .ring { top: 50%; left: -6px; margin: -12px 0 0; }
+
+    /* swipe between questions like a vertical carousel: one question per screen, snapping into place */
+    html { scroll-snap-type: y mandatory; scroll-padding-top: var(--bar, 76px); }
+    /* overflow: hidden also stops a native fling, so it can't fight the glide */
+    html.is-gliding { scroll-snap-type: none; overflow: hidden; }
+    /* touch screens snap with our own quicker animation instead (see swipe snapping in the script) */
+    html.touch-snap { scroll-snap-type: none; }
+    header { scroll-snap-align: start; }
+    .q {
+      padding: 20px 16px 20px 50px; margin-bottom: 20px;
+      min-height: calc(100svh - var(--bar, 76px) - 24px);
+      scroll-snap-align: start; scroll-snap-stop: always;
+    }
+    /* fixed tiles (default; add ?free to the URL to turn them off): a question too long for the screen
+       scrolls inside its tile, and past its end the swipe moves the page on */
+    .fixed-tiles .q { height: calc(100svh - var(--bar, 76px) - 24px); overflow-y: auto; }
+    /* the answer box stretches to fill whatever room the tile has left */
+    .q { display: flex; flex-direction: column; }
+    .q > * { flex-shrink: 0; }
+    .q textarea { flex-grow: 1; }
+    /* fade at the tile's bottom edge while there's more below. Its margins must add up to its height:
+       any slack is space the answer box grows into, which keeps the tile overflowing and the fade on */
+    .q.has-more::after {
+      content: ""; position: sticky; display: block; bottom: -20px; height: 84px; margin: -84px -16px 0 -50px; flex-shrink: 0;
+      background: linear-gradient(transparent, var(--card) 75%); pointer-events: none;
+    }
+    .q.is-answered.has-more::after { background: linear-gradient(transparent, var(--answered) 75%); }
+    .controls { scroll-snap-align: end; }
+    .q-id { width: 32px; }
+    .q-title { margin-right: 36px; }
+    textarea { min-height: 76px; }
+
+    /* buttons sit after the last question instead of floating over the page */
+    .controls { position: static; padding: 8px 0 40px; background: none; }
+    .controls .hint { display: none; }
+    .controls .wrap { padding-left: 0; }
+    .controls .btn { flex: 1; }
+
+    /* typing mode: while an answer box has focus, it's the only thing on screen above the keyboard */
+    html.is-typing { overflow: hidden; scroll-snap-type: none; }
+    html.is-typing body::before { content: ""; position: fixed; inset: 0; z-index: 19; background: var(--paper); }
+    /* the box on top with a margin all round, the question and Done under it, right above the keyboard.
+       With interactive-widget=resizes-content, 100dvh and bottom: 0 already stop at the keyboard */
+    html.is-typing .q textarea:focus {
+      position: fixed; z-index: 20; top: 16px; left: 16px; width: calc(100% - 32px);
+      height: calc(100dvh - 16px - 10px - var(--tbar, 56px)); min-height: 0; resize: none; field-sizing: fixed; overflow-y: auto;
+      padding: 14px 16px; background: var(--card); box-shadow: none; outline: 3px solid var(--ember); outline-offset: 0;
+    }
+    html.is-typing .typing-bar {
+      position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; padding: 4px 16px 0;
+      display: flex; align-items: center; gap: 12px; background: var(--paper);
+    }
+    .typing-bar span {
+      flex: 1; min-width: 0; color: var(--ink-dim); font-size: 15px; line-height: 1.35;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .typing-bar b { color: var(--ember-ink); margin-right: 6px; }
+    .typing-bar .btn { padding: 6px 16px; font-size: 15px; margin-bottom: 3px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    /* the loader only blinks in place, nothing moves, so it keeps running as the "still waiting" signal */
+    .loader i { animation: pixel-blink .9s steps(1) infinite !important; }
+    .loader i:nth-child(2) { animation-delay: .3s !important; }
+    .loader i:nth-child(3) { animation-delay: .6s !important; }
+  }
+
+  /* question bodies are markdown */
+  .q-body > * { margin: 0 0 10px; }
+  .q-body > :last-child { margin-bottom: 0; }
+  .q-body ul, .q-body ol { padding-left: 24px; }
+  .q-body a { color: var(--ember-ink); }
+  .q-body pre { overflow-x: auto; padding: 10px 12px; background: var(--ember-soft); font: 14px/1.45 ui-monospace, monospace; }
+  .q-body pre code { padding: 0; background: none; }
+  .q-body:empty { display: none; }
+
+  /* the first choice is the agent's recommendation */
+  .chip { text-align: left; }
+  .chip .rec-mark { display: inline-block; margin-right: 8px; vertical-align: -1px; }
+  .chip[aria-pressed="true"] .rec-mark rect { fill: #fff; }
+  .chip:disabled { cursor: default; }
+  .chip:disabled:hover { background: var(--paper); }
+  .chip[aria-pressed="true"]:disabled:hover { background: var(--ember); }
+
+  /* before the first round, and after the session: just the title and a note */
+  .sent .loader { margin-left: 10px; }
+  .sent .loader i { background: var(--ember); }
+  body.is-empty .rail, body.is-empty .controls, body.is-finished .controls, body.is-empty #round-label { display: none; }
+  body.is-empty .layout { display: block; }
+  body.is-empty header { padding-bottom: 24px; }
+
+  /* lost connection, or a save that didn't go through */
+  .alert {
+    display: none; position: fixed; z-index: 30; top: 16px; left: 50%; transform: translateX(-50%);
+    width: max-content; max-width: calc(100% - 32px); padding: 10px 16px;
+    background: var(--card); color: var(--ink); font-size: 15px;
+    box-shadow: 0 -3px 0 0 var(--ember), 0 3px 0 0 var(--ember), -3px 0 0 0 var(--ember), 3px 0 0 0 var(--ember);
+  }
+  .alert.is-on { display: block; }
+</style>
+</head>
+<body class="is-empty">
+  <button class="theme-toggle" type="button"></button>
+  <p class="alert" id="alert" role="alert"></p>
+  <div class="wrap">
+    <header>
+      <h1 id="topic"></h1>
+      <p id="round-label"></p>
+    </header>
+    <div class="layout">
+      <aside class="rail">
+        <p class="tally" id="tally"></p>
+        <nav class="skewer" id="skewer" aria-label="Questions in this round"><span class="ring"></span></nav>
+      </aside>
+      <div>
+        <main id="round"></main>
+        <p class="sent" id="note" role="status">Connecting to the grill server…</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="typing-bar"><span></span><button class="btn btn-hot" type="button">Done</button></div>
+
+  <div class="controls">
+    <div class="wrap">
+      <span class="hint"><kbd>Alt/Opt ↑↓</kbd> move <kbd>Alt/Opt 1–9</kbd> pick <kbd>Ctrl/Cmd Enter</kbd> finish</span>
+      <button class="btn" data-action="copy">Copy answers</button>
+      <button class="btn btn-hot" data-action="done">
+        <span class="when-open">Round done</span>
+        <span class="when-sent">Waiting <span class="loader" aria-hidden="true"><i></i><i></i><i></i></span></span>
+      </button>
+    </div>
+  </div>
+
+<script src="pixel.js"></script>
+<script src="grill.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

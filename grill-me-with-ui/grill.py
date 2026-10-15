@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+"""grill-me-with-ui: the CLI the agent runs, and the local server the page talks to.
+
+Both meet in .grill/ in the folder the agent works in:
+
+  .grill/config.json                  {"theme": "system", "idleTimeoutMinutes": 120}
+  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}}
+  .grill/sessions/<uuid>/round-N.json {"questions": [{id, title, body, choices, answer}]}
+
+The status says whose turn it is, and only that side writes:
+  agent_writing_round  the agent, through `round`, `finish`
+  user_writing_round   the server, saving the user's answers
+  session_finished     nobody
+
+Commands: start --title "...", round <path>, wait, finish, status.
+Python 3.8+, standard library only.
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import uuid
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+AGENT, USER, FINISHED = "agent_writing_round", "user_writing_round", "session_finished"
+PAGE_DIR = Path(__file__).resolve().parent / "page"
+DEFAULT_CONFIG = {"theme": "system", "idleTimeoutMinutes": 120}
+THEMES = ("system", "light", "dark")
+PORTS = range(4747, 4800)
+CMD = "{} {}".format("python" if os.name == "nt" else "python3", Path(__file__).resolve())
+ROUND_EXAMPLE = """{
+  "questions": [
+    {
+      "title": "Primary user",
+      "body": "Who is this for? Markdown is fine.",
+      "choices": ["Paying customers", "Internal team only", "Both"]
+    }
+  ]
+}"""
+# localhost only: skip any HTTP proxy from the environment
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class GrillError(Exception):
+    pass
+
+
+# ---------- files ----------
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_json(path):
+    # Windows can refuse a read while another process swaps the file in, so retry briefly
+    for _ in range(20):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            time.sleep(0.05)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path, data):
+    """Write to a temp file, then rename it over the target, so readers never see half a file."""
+    tmp = path.with_name(".{}.{}-{}.tmp".format(path.name, os.getpid(), threading.get_ident()))
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    for _ in range(20):
+        try:
+            return os.replace(str(tmp), str(path))
+        except PermissionError:
+            time.sleep(0.05)
+    os.replace(str(tmp), str(path))
+
+
+def grill_dir():
+    return Path.cwd() / ".grill"
+
+
+def ensure_grill_dir():
+    gdir = grill_dir()
+    (gdir / "sessions").mkdir(parents=True, exist_ok=True)
+    if not (gdir / ".gitignore").exists():
+        (gdir / ".gitignore").write_text("*\n", encoding="utf-8")
+    if not (gdir / "config.json").exists():
+        write_json(gdir / "config.json", DEFAULT_CONFIG)
+    return gdir
+
+
+def load_config(gdir):
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        cfg.update(read_json(gdir / "config.json"))
+    except (OSError, ValueError):
+        pass
+    if cfg["theme"] not in THEMES:
+        cfg["theme"] = "system"
+    if not isinstance(cfg["idleTimeoutMinutes"], (int, float)) or cfg["idleTimeoutMinutes"] <= 0:
+        cfg["idleTimeoutMinutes"] = DEFAULT_CONFIG["idleTimeoutMinutes"]
+    return cfg
+
+
+def session_file(sdir):
+    return sdir / "session.json"
+
+
+def update_session(sdir, **changes):
+    s = read_json(session_file(sdir))
+    s.update(changes, updatedAt=now())
+    write_json(session_file(sdir), s)
+    return s
+
+
+def active_session():
+    """The session in this folder that isn't finished. `start` makes sure there's at most one."""
+    found = []
+    for f in (grill_dir() / "sessions").glob("*/session.json"):
+        try:
+            s = read_json(f)
+        except (OSError, ValueError):
+            continue
+        if s.get("status") != FINISHED:
+            found.append((s.get("updatedAt", ""), f.parent))
+    return max(found)[1] if found else None
+
+
+def require_active():
+    sdir = active_session()
+    if not sdir:
+        raise GrillError('there is no active grill session in this folder.\n\n'
+                         'Start one with:\n  {} start --title "<session title>"'.format(CMD))
+    return sdir
+
+
+def round_count(sdir):
+    nums = [int(m.group(1)) for m in (re.fullmatch(r"round-(\d+)\.json", p.name) for p in sdir.iterdir()) if m]
+    return max(nums, default=0)
+
+
+def round_file(sdir, n):
+    return sdir / "round-{}.json".format(n)
+
+
+def latest_questions(sdir):
+    n = round_count(sdir)
+    return read_json(round_file(sdir, n))["questions"] if n else []
+
+
+# ---------- server process (started and found by the CLI) ----------
+
+def server_url(s):
+    return "http://localhost:{}/".format(s["server"]["port"])
+
+
+def ping(s):
+    port = (s.get("server") or {}).get("port")
+    if not port:
+        return False
+    try:
+        with LOCAL.open("http://127.0.0.1:{}/api/ping".format(port), timeout=1) as r:
+            return json.loads(r.read().decode()).get("id") == s["id"]
+    except Exception:
+        return False
+
+
+def ensure_server(sdir, open_browser=False):
+    """Start the session's server in the background unless it's already answering."""
+    s = read_json(session_file(sdir))
+    if ping(s):
+        return s
+    args = [sys.executable, str(Path(__file__).resolve()), "serve", str(sdir)]
+    if open_browser:
+        args.append("--open")
+    # the server must not hold on to the agent's terminal, or the agent's command never returns
+    log = open(str(sdir / "server.log"), "ab")
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": log, "close_fds": True}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(args, **kwargs)
+    log.close()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        time.sleep(0.1)
+        s = read_json(session_file(sdir))
+        if ping(s):
+            return s
+    raise GrillError("the server didn't start. Its log is in {}".format(sdir / "server.log"))
+
+
+def stop_server(sdir, s):
+    """Ask a running server to finish the session itself, and wait until it's gone."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:{}/api/finish".format(s["server"]["port"]),
+                                     data=b"{}", method="POST", headers={"Content-Type": "application/json"})
+        LOCAL.open(req, timeout=2).close()
+    except Exception:
+        update_session(sdir, status=FINISHED)
+    deadline = time.time() + 5
+    while time.time() < deadline and ping(s):
+        time.sleep(0.1)
+
+
+# ---------- the agent's round file ----------
+
+HINTS = {
+    "recommended": 'put the recommended answer first in "choices" instead',
+    "id": "question IDs are assigned for you",
+    "answer": "answers are filled in by the page",
+}
+
+
+def validate_round(data, path):
+    problems = []
+    if not isinstance(data, dict):
+        raise GrillError('{} must be a JSON object like this:\n{}'.format(path, ROUND_EXAMPLE))
+    for key in data:
+        if key != "questions":
+            problems.append('unknown top-level field "{}"'.format(key))
+    questions = data.get("questions")
+    if not isinstance(questions, list) or not questions:
+        problems.append('"questions" must be a list with at least one question')
+        questions = []
+    for i, q in enumerate(questions):
+        where = "questions[{}]".format(i)
+        if not isinstance(q, dict):
+            problems.append("{} must be an object with title, body and choices".format(where))
+            continue
+        for key in ("title", "body", "choices"):
+            if key not in q:
+                problems.append('{} is missing "{}"'.format(where, key))
+        for key in q:
+            if key not in ("title", "body", "choices"):
+                hint = HINTS.get(key)
+                problems.append('{} has unknown field "{}"{}'.format(where, key, " ({})".format(hint) if hint else ""))
+        if "title" in q and (not isinstance(q["title"], str) or not q["title"].strip()):
+            problems.append('{}.title must be a non-empty string'.format(where))
+        if "body" in q and not isinstance(q["body"], str):
+            problems.append('{}.body must be a string (markdown is fine)'.format(where))
+        if "choices" in q:
+            c = q["choices"]
+            if not isinstance(c, list) or not c or not all(isinstance(x, str) and x.strip() for x in c):
+                problems.append('{}.choices must be a list of at least one non-empty string; '
+                                'the first one is your recommendation'.format(where))
+    if problems:
+        raise GrillError("{} has {} problem{}:\n{}\n\nExpected shape:\n{}".format(
+            path, len(problems), "" if len(problems) == 1 else "s",
+            "\n".join("  - " + p for p in problems), ROUND_EXAMPLE))
+    return [{"id": "Q{}".format(i + 1), "title": q["title"].strip(), "body": q["body"].strip(),
+             "choices": [c.strip() for c in q["choices"]], "answer": None}
+            for i, q in enumerate(questions)]
+
+
+def format_answers(questions):
+    lines = []
+    for q in questions:
+        a = q.get("answer") or {}
+        choice, text = a.get("choice"), (a.get("text") or "").strip()
+        parts = []
+        if isinstance(choice, int) and 0 <= choice < len(q["choices"]):
+            parts.append(q["choices"][choice].rstrip(".") if text else q["choices"][choice])
+        if text:
+            text = text.replace("\n", "\n    ")
+            parts.append("Note: " + text if parts else text)
+        lines.append("{}: {}".format(q["id"], ". ".join(parts) if parts else "(skipped)"))
+    return "\n".join(lines)
+
+
+# ---------- commands ----------
+
+def cmd_start(args):
+    title = args.title.strip()
+    if not title:
+        raise GrillError("--title can't be empty")
+    gdir = ensure_grill_dir()
+    current = active_session()
+    if current:
+        s = read_json(session_file(current))
+        url = server_url(s) if ping(s) else "(server stopped; `status` restarts it)"
+        raise GrillError(
+            "a grill session is already active in this folder.\n"
+            "  Title:  {}\n  Status: {} (round {})\n  URL:    {}\n\n"
+            "To end it, run:\n  {} finish\n\nThen run start again.".format(
+                s["title"], s["status"], round_count(current), url, CMD))
+    sid = str(uuid.uuid4())
+    sdir = gdir / "sessions" / sid
+    sdir.mkdir(parents=True)
+    write_json(session_file(sdir), {"id": sid, "title": title, "status": AGENT, "updatedAt": now(), "server": None})
+    s = ensure_server(sdir, open_browser=not os.environ.get("GRILL_NO_BROWSER"))
+    print("Grill session started: {}\n  URL: {}\n\n"
+          "Next: write the first round to a JSON file and run:\n  {} round <path>".format(title, server_url(s), CMD))
+
+
+def cmd_round(args):
+    sdir = require_active()
+    s = read_json(session_file(sdir))
+    if s["status"] == USER:
+        raise GrillError("round {} is still open in the browser: it's the user's turn.\n\n"
+                         "Get their answers with:\n  {} wait".format(round_count(sdir), CMD))
+    path = Path(args.path)
+    if not path.is_file():
+        raise GrillError("{} doesn't exist. Write the round there first.".format(path))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise GrillError("{} is not valid JSON: {}\n\nExpected shape:\n{}".format(path, e, ROUND_EXAMPLE))
+    questions = validate_round(data, path)
+    s = ensure_server(sdir)
+    n = round_count(sdir) + 1
+    write_json(round_file(sdir, n), {"questions": questions})
+    update_session(sdir, status=USER)
+    print("Round {} sent: {} question{}. The user answers it at {}\n\n"
+          "Next, run:\n  {} wait".format(n, len(questions), "" if len(questions) == 1 else "s", server_url(s), CMD))
+
+
+def cmd_wait(args):
+    sdir = require_active()
+    checked = 0
+    while True:
+        s = read_json(session_file(sdir))
+        if s["status"] == FINISHED:
+            raise GrillError("the session was finished, so there are no answers to wait for")
+        if s["status"] == AGENT:
+            n = round_count(sdir)
+            if not n:
+                raise GrillError("no round has been sent yet. Write one and run:\n  {} round <path>".format(CMD))
+            print(format_answers(latest_questions(sdir)))
+            return
+        # the server may have shut down while idle; the user needs it to submit
+        if time.time() - checked > 10:
+            ensure_server(sdir)
+            checked = time.time()
+        time.sleep(1)
+
+
+def cmd_finish(args):
+    sdir = require_active()
+    s = read_json(session_file(sdir))
+    if ping(s):
+        stop_server(sdir, s)
+    else:
+        update_session(sdir, status=FINISHED)
+    print("Session finished: {}".format(s["title"]))
+
+
+def cmd_status(args):
+    sdir = active_session() if (grill_dir() / "sessions").is_dir() else None
+    if not sdir:
+        print('No active grill session in this folder.\n\nStart one with:\n  {} start --title "<session title>"'.format(CMD))
+        return
+    s = ensure_server(sdir)
+    n = round_count(sdir)
+    if s["status"] == USER:
+        nxt = "the user is answering round {}. Run:\n  {} wait".format(n, CMD)
+    elif n:
+        nxt = ("the user submitted round {}. Run `{} wait` to print their answers, then send the next round "
+               "with `round <path>`, or end the session with `finish`.".format(n, CMD))
+    else:
+        nxt = "write the first round to a JSON file and run:\n  {} round <path>".format(CMD)
+    print("Title:  {}\nStatus: {}\nRound:  {}\nURL:    {}\n\nNext: {}".format(s["title"], s["status"], n, server_url(s), nxt))
+
+
+# ---------- the server ----------
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # on Windows, address reuse would let two servers share a port
+    allow_reuse_address = os.name != "nt"
+
+
+def page_state(sdir):
+    s = read_json(session_file(sdir))
+    return {"id": s["id"], "title": s["title"], "status": s["status"],
+            "round": round_count(sdir), "questions": latest_questions(sdir)}
+
+
+def files_version(sdir):
+    """Changes whenever the session or its latest round is rewritten."""
+    out = []
+    for f in (session_file(sdir), round_file(sdir, round_count(sdir))):
+        try:
+            st = f.stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append(None)
+    return out
+
+
+def clean_answer(q, a):
+    if not isinstance(a, dict):
+        raise ValueError("answer must be an object")
+    choice, text = a.get("choice"), a.get("text") or ""
+    if choice is not None and (not isinstance(choice, int) or isinstance(choice, bool) or not 0 <= choice < len(q["choices"])):
+        raise ValueError("bad choice for " + q["id"])
+    if not isinstance(text, str):
+        raise ValueError("text must be a string")
+    return None if choice is None and not text.strip() else {"choice": choice, "text": text}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "grill"
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def send(self, code, body, ctype="application/json; charset=utf-8"):
+        if not isinstance(body, bytes):
+            body = json.dumps(body, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        srv, path = self.server, self.path.split("?")[0]
+        if path == "/api/ping":
+            return self.send(200, {"id": srv.session_id})
+        if path == "/api/events":
+            return self.events()
+        srv.touch()
+        if path == "/api/state":
+            return self.send(200, page_state(srv.sdir))
+        name = "index.html" if path == "/" else path.lstrip("/")
+        f = (PAGE_DIR / name).resolve()
+        if f.parent != PAGE_DIR or not f.is_file():
+            return self.send(404, {"error": "not found"})
+        body = f.read_bytes()
+        if name == "index.html":
+            body = body.replace(b"{{theme}}", srv.config["theme"].encode())
+        types = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
+        self.send(200, body, types.get(f.suffix, "application/octet-stream") + "; charset=utf-8")
+
+    def do_POST(self):
+        srv, path = self.server, self.path.split("?")[0]
+        srv.touch()
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(length, 2_000_000)) or b"{}")
+        except ValueError:
+            return self.send(400, {"error": "invalid JSON"})
+        with srv.lock:
+            if path == "/api/finish":
+                update_session(srv.sdir, status=FINISHED)
+                return self.send(200, {"ok": True})
+            if path not in ("/api/answer", "/api/submit"):
+                return self.send(404, {"error": "not found"})
+            # the server only writes during the user's turn, and only to the round on screen
+            s, n = read_json(session_file(srv.sdir)), round_count(srv.sdir)
+            if s["status"] != USER or body.get("round") != n:
+                return self.send(409, {"error": "this round is closed", "status": s["status"], "round": n})
+            data = read_json(round_file(srv.sdir, n))
+            by_id = {q["id"]: q for q in data["questions"]}
+            items = body.get("answers") if path == "/api/submit" else [body]
+            try:
+                for item in items or []:
+                    q = by_id.get(item.get("id"))
+                    if not q:
+                        raise ValueError("unknown question {}".format(item.get("id")))
+                    q["answer"] = clean_answer(q, item)
+            except (ValueError, AttributeError) as e:
+                return self.send(400, {"error": str(e)})
+            write_json(round_file(srv.sdir, n), data)
+            if path == "/api/submit":
+                update_session(srv.sdir, status=AGENT)
+        self.send(200, {"ok": True})
+
+    def events(self):
+        """Server-sent events: the page gets the full state now and whenever the files change."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        last, sent_at = None, 0
+        try:
+            while not self.server.stopping:
+                version = files_version(self.server.sdir)
+                if version != last:
+                    try:
+                        payload = json.dumps(page_state(self.server.sdir), ensure_ascii=False)
+                    except (OSError, ValueError):
+                        payload = None  # caught mid-change; try again next tick
+                    if payload:
+                        self.wfile.write("data: {}\n\n".format(payload).encode())
+                        self.wfile.flush()
+                        last, sent_at = version, time.time()
+                elif time.time() - sent_at > 15:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    sent_at = time.time()
+                time.sleep(0.4)
+        except OSError:
+            pass  # the page went away
+
+
+def cmd_serve(args):
+    sdir = Path(args.sdir)
+    s = read_json(session_file(sdir))
+    if s["status"] == FINISHED:
+        return
+    # reuse the last port, so an open page reconnects after a restart
+    prev = (s.get("server") or {}).get("port")
+    httpd = None
+    for port in [p for p in [prev] if p] + [p for p in PORTS if p != prev] + [0]:
+        try:
+            httpd = Server(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            continue
+    httpd.sdir, httpd.session_id = sdir, s["id"]
+    httpd.config = load_config(sdir.parent.parent)
+    httpd.lock, httpd.stopping, httpd.last_activity = threading.Lock(), False, time.time()
+    httpd.touch = lambda: setattr(httpd, "last_activity", time.time())
+    update_session(sdir, server={"port": httpd.server_address[1], "pid": os.getpid()})
+    print("{} serving {} on port {}".format(now(), s["id"], httpd.server_address[1]), flush=True)
+
+    def watch():
+        idle = httpd.config["idleTimeoutMinutes"] * 60
+        while True:
+            time.sleep(1)
+            try:
+                status = read_json(session_file(sdir))["status"]
+                changed = max(f.stat().st_mtime for f in sdir.glob("*.json"))
+            except (OSError, ValueError):
+                continue
+            if status == FINISHED:
+                time.sleep(1.5)  # let open pages receive the final state
+                reason = "session finished"
+                break
+            if time.time() - max(httpd.last_activity, changed) > idle:
+                reason = "idle"
+                break
+        print("{} stopping: {}".format(now(), reason), flush=True)
+        httpd.stopping = True
+        httpd.shutdown()
+
+    threading.Thread(target=watch, daemon=True).start()
+    if args.open:
+        webbrowser.open(server_url(read_json(session_file(sdir))))
+    httpd.serve_forever(poll_interval=0.25)
+    httpd.server_close()
+    os._exit(0)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="grill.py", description="Run a Grill Me session in a browser page.")
+    sub = p.add_subparsers(dest="command", metavar="command")
+    sp = sub.add_parser("start", help="start a session, its server, and open the page")
+    sp.add_argument("--title", required=True, help="short title shown on the page")
+    sp = sub.add_parser("round", help="send the next round from a JSON file")
+    sp.add_argument("path", help="JSON file with {\"questions\": [{title, body, choices}]}")
+    sub.add_parser("wait", help="block until the user submits the round, then print the answers")
+    sub.add_parser("finish", help="end the session and stop its server")
+    sub.add_parser("status", help="show the active session, its URL, and what to do next")
+    sp = sub.add_parser("serve")  # internal: the background server
+    sp.add_argument("sdir")
+    sp.add_argument("--open", action="store_true")
+    args = p.parse_args()
+    commands = {"start": cmd_start, "round": cmd_round, "wait": cmd_wait,
+                "finish": cmd_finish, "status": cmd_status, "serve": cmd_serve}
+    if not args.command:
+        p.print_help()
+        return 1
+    try:
+        commands[args.command](args)
+    except GrillError as e:
+        print("error: {}".format(e), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
