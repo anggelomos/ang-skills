@@ -32,7 +32,7 @@ Copy this folder into your agent's skills folder, for example `~/.claude/skills/
 |---|---|
 | `grill.py start --title "…"` | Starts a session and its server, and opens the page. |
 | `grill.py round <file.json>` | Sends a round: `{"questions": [{"title", "body", "choices"}]}`. |
-| `grill.py wait` | Waits until you submit, then prints `Q1: <answer>` lines. |
+| `grill.py wait [--timeout <s>]` | Waits until you submit, then prints `Q1: <answer>` lines. With `--timeout`, it gives up cleanly so the agent can run it again. |
 | `grill.py finish` | Ends the session and stops the server. |
 | `grill.py status` | Shows the session, its URL and what to do next. |
 

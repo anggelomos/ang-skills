@@ -12,7 +12,7 @@ The status says whose turn it is, and only that side writes:
   user_writing_round   the server, saving the user's answers
   session_finished     nobody
 
-Commands: start --title "...", round <path>, wait, finish, status.
+Commands: start --title "...", round <path>, wait [--timeout SECONDS], finish, status.
 Python 3.8+, standard library only.
 """
 import argparse
@@ -319,12 +319,13 @@ def cmd_round(args):
     write_json(round_file(sdir, n), {"questions": questions})
     update_session(sdir, status=USER)
     print("Round {} sent: {} question{}. The user answers it at {}\n\n"
-          "Next, run:\n  {} wait".format(n, len(questions), "" if len(questions) == 1 else "s", server_url(s), CMD))
+          "Next, run this and don't end your turn until it prints the answers:\n  {} wait\n"
+          "(Add --timeout <seconds> if your shell tool has a time limit.)".format(n, len(questions), "" if len(questions) == 1 else "s", server_url(s), CMD))
 
 
 def cmd_wait(args):
     sdir = require_active()
-    checked = 0
+    checked, deadline = 0, time.time() + args.timeout if args.timeout else None
     while True:
         s = read_json(session_file(sdir))
         if s["status"] == FINISHED:
@@ -335,6 +336,12 @@ def cmd_wait(args):
                 raise GrillError("no round has been sent yet. Write one and run:\n  {} round <path>".format(CMD))
             print(format_answers(latest_questions(sdir)))
             return
+        # a clean exit before the agent's shell tool kills us, so the agent knows to run us again
+        if deadline and time.time() >= deadline:
+            print("Still waiting: the user hasn't submitted round {} yet. This is normal.\n\n"
+                  "Run the same command again now, and don't end your turn:\n"
+                  "  {} wait --timeout {}".format(round_count(sdir), CMD, args.timeout))
+            return 2
         # the server may have shut down while idle; the user needs it to submit
         if time.time() - checked > 10:
             ensure_server(sdir)
@@ -559,7 +566,9 @@ def main():
     sp.add_argument("--title", required=True, help="short title shown on the page")
     sp = sub.add_parser("round", help="send the next round from a JSON file")
     sp.add_argument("path", help="JSON file with {\"questions\": [{title, body, choices}]}")
-    sub.add_parser("wait", help="block until the user submits the round, then print the answers")
+    sp = sub.add_parser("wait", help="block until the user submits the round, then print the answers")
+    sp.add_argument("--timeout", type=int, metavar="SECONDS",
+                    help="give up after this many seconds (exit code 2); set it below your shell tool's time limit")
     sub.add_parser("finish", help="end the session and stop its server")
     sub.add_parser("status", help="show the active session, its URL, and what to do next")
     sp = sub.add_parser("serve")  # internal: the background server
@@ -572,13 +581,12 @@ def main():
         p.print_help()
         return 1
     try:
-        commands[args.command](args)
+        return commands[args.command](args) or 0
     except GrillError as e:
         print("error: {}".format(e), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
-    return 0
 
 
 if __name__ == "__main__":
