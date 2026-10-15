@@ -170,6 +170,7 @@ function apply(s) {
   const sent = !empty && s.status === AGENT;
   document.body.classList.toggle("is-submitted", sent);
   if (api) sent || finished ? api.close() : api.reopen();
+  $("#finished-detail").textContent = `The grill's off · ${s.round} round${s.round === 1 ? "" : "s"} cooked`;
   if (finished) setNote("Session finished. You can close this tab.");
   else if (empty) setNote(`The agent is preparing the first round ${loader}`);
   else if (sent) setNote(`Round ${s.round} sent. Round ${s.round + 1} shows up here as soon as it's ready.`);

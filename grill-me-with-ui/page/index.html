@@ -327,11 +327,31 @@
     box-shadow: 0 -3px 0 0 var(--ember), 0 3px 0 0 var(--ember), -3px 0 0 0 var(--ember), 3px 0 0 0 var(--ember);
   }
   .alert.is-on { display: block; }
+
+  /* session finished: the whole screen becomes one big title */
+  .finished { display: none; position: fixed; inset: 0; z-index: 40; padding: 24px; place-items: center; text-align: center; background: var(--paper); }
+  body.is-finished .finished { display: grid; animation: finished-in .3s steps(3) both; }
+  body.is-finished { overflow: hidden; }
+  body.is-finished .theme-toggle { position: fixed; z-index: 41; }
+  .finished h2 { margin: 0; font: 600 clamp(48px, 10vw, 104px)/1 var(--display); color: var(--ink); letter-spacing: -.01em; }
+  .finished p { margin: 20px 0 0; font-size: clamp(19px, 2.6vw, 26px); font-weight: 500; color: var(--ember-ink); }
+  .finished small { display: block; margin-top: 36px; font-size: 15px; color: var(--ink-dim); }
+  @keyframes finished-in { from { opacity: 0; transform: translateY(16px); } }
+
+  /* the pixel font draws "fi" as a ligature that reads like "A" */
+  header h1, .finished h2 { font-variant-ligatures: none; }
 </style>
 </head>
 <body class="is-empty">
   <button class="theme-toggle" type="button"></button>
   <p class="alert" id="alert" role="alert"></p>
+  <section class="finished" role="status">
+    <div>
+      <h2>Session finished</h2>
+      <p>You can close this tab now.</p>
+      <small id="finished-detail"></small>
+    </div>
+  </section>
   <div class="wrap">
     <header>
       <h1 id="topic"></h1>
