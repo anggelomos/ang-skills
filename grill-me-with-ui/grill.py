@@ -3,8 +3,8 @@
 
 Both meet in .grill/ in the folder the agent works in:
 
-  .grill/config.json                  {"theme": "system", "idleTimeoutMinutes": 120}
-  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}}
+  .grill/config.json                  {"theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "hubUrl": "..."}
+  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}, hub: {url, page}}
   .grill/sessions/<uuid>/round-N.json {"questions": [{id, title, body, choices, answer}]}
 
 The status says whose turn it is, and only that side writes:
@@ -12,7 +12,11 @@ The status says whose turn it is, and only that side writes:
   user_writing_round   the server, saving the user's answers
   session_finished     nobody
 
-Commands: start --title "...", round <path>, wait [--timeout SECONDS], finish, status.
+If a grill hub (scripts/grill-hub in the repo) answers at hubUrl when the session starts, the session
+uses it instead of a local server: every change is pushed to the hub, and `wait` copies the user's
+answers back into .grill/. The choice is made once, at `start`, and never changes for that session.
+
+Commands: start --title "..." [--local], round <path>, wait [--timeout SECONDS], finish, status, connect.
 Python 3.8+, standard library only.
 """
 import argparse
@@ -20,10 +24,12 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 import webbrowser
@@ -32,7 +38,9 @@ from pathlib import Path
 
 AGENT, USER, FINISHED = "agent_writing_round", "user_writing_round", "session_finished"
 PAGE_DIR = Path(__file__).resolve().parent / "page"
-DEFAULT_CONFIG = {"theme": "system", "idleTimeoutMinutes": 120}
+HUB_URL = "http://127.0.0.1:7171"
+DEFAULT_CONFIG = {"theme": "system", "idleTimeoutMinutes": 120, "useHub": True, "hubUrl": HUB_URL}
+HUB_RETRY_SECONDS = 300
 THEMES = ("system", "light", "dark")
 PORTS = range(4747, 4800)
 CMD = "{} {}".format("python" if os.name == "nt" else "python3", Path(__file__).resolve())
@@ -105,6 +113,11 @@ def load_config(gdir):
         cfg["theme"] = "system"
     if not isinstance(cfg["idleTimeoutMinutes"], (int, float)) or cfg["idleTimeoutMinutes"] <= 0:
         cfg["idleTimeoutMinutes"] = DEFAULT_CONFIG["idleTimeoutMinutes"]
+    if not isinstance(cfg["useHub"], bool):
+        cfg["useHub"] = DEFAULT_CONFIG["useHub"]
+    if not isinstance(cfg["hubUrl"], str) or not cfg["hubUrl"].strip():
+        cfg["hubUrl"] = HUB_URL
+    cfg["hubUrl"] = cfg["hubUrl"].strip().rstrip("/")
     return cfg
 
 
@@ -157,6 +170,8 @@ def latest_questions(sdir):
 # ---------- server process (started and found by the CLI) ----------
 
 def server_url(s):
+    if s.get("hub"):
+        return s["hub"]["page"]
     return "http://localhost:{}/".format(s["server"]["port"])
 
 
@@ -208,6 +223,76 @@ def stop_server(sdir, s):
     deadline = time.time() + 5
     while time.time() < deadline and ping(s):
         time.sleep(0.1)
+
+
+# ---------- the hub (when the session uses one) ----------
+
+class HubDown(GrillError):
+    pass
+
+
+def hub_call(base, method, path, body=None, timeout=5):
+    """One request to the hub's agent port. Returns (HTTP status, JSON body); raises HubDown if unreachable."""
+    data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
+    req = urllib.request.Request(base + path, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with LOCAL.open(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode() or "{}")
+        except ValueError:
+            return e.code, {}
+    except (OSError, ValueError) as e:
+        raise HubDown("the grill hub at {} isn't answering ({})".format(base, e))
+
+
+def find_hub(cfg):
+    """The hub's info if one answers at hubUrl, else None."""
+    try:
+        code, info = hub_call(cfg["hubUrl"], "GET", "/api/ping", timeout=1)
+    except HubDown:
+        return None
+    return info if code == 200 and info.get("hub") else None
+
+
+def project_name():
+    """The git remote's repo name, or the folder name, as a URL-friendly slug."""
+    name = Path.cwd().name
+    try:
+        url = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True, timeout=3).stdout.strip()
+        if url:
+            name = re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "project"
+
+
+def hub_sync(sdir):
+    """Push the whole session to the hub. The hub keeps anything newer it already has (the user's answers)."""
+    s = read_json(session_file(sdir))
+    rounds = [read_json(round_file(sdir, n)) for n in range(1, round_count(sdir) + 1)]
+    code, state = hub_call(s["hub"]["url"], "PUT", "/api/sessions/" + s["id"],
+                           {"project": s["hub"]["project"], "title": s["title"], "status": s["status"], "rounds": rounds})
+    if code != 200:
+        raise GrillError("the grill hub refused the session: {}".format(state.get("error", code)))
+    return state
+
+
+def flush_finished(gdir):
+    """Tell the hub about sessions here that were finished while it was down."""
+    for f in (gdir / "sessions").glob("*/session.json"):
+        try:
+            if read_json(f).get("hubPending"):
+                hub_sync(f.parent)
+                update_session(f.parent, hubPending=None)
+        except (OSError, ValueError, GrillError):
+            pass
+
+
+def hub_down_message(e):
+    return ("{}.\n\nThis session runs on the hub, so it can't continue until the hub is back. Start it "
+            "(for example `docker compose up -d` in scripts/grill-hub), then run:\n  {} wait".format(e, CMD))
 
 
 # ---------- the agent's round file ----------
@@ -285,19 +370,45 @@ def cmd_start(args):
     current = active_session()
     if current:
         s = read_json(session_file(current))
-        url = server_url(s) if ping(s) else "(server stopped; `status` restarts it)"
+        url = server_url(s) if s.get("hub") or ping(s) else "(server stopped; `status` restarts it)"
         raise GrillError(
             "a grill session is already active in this folder.\n"
             "  Title:  {}\n  Status: {} (round {})\n  URL:    {}\n\n"
             "To end it, run:\n  {} finish\n\nThen run start again.".format(
                 s["title"], s["status"], round_count(current), url, CMD))
+    cfg = load_config(gdir)
+    hub = find_hub(cfg) if cfg["useHub"] and not args.local else None
     sid = str(uuid.uuid4())
     sdir = gdir / "sessions" / sid
     sdir.mkdir(parents=True)
-    write_json(session_file(sdir), {"id": sid, "title": title, "status": AGENT, "updatedAt": now(), "server": None})
-    s = ensure_server(sdir, open_browser=not os.environ.get("GRILL_NO_BROWSER"))
-    print("Grill session started: {}\n  URL: {}\n\n"
-          "Next: write the first round to a JSON file and run:\n  {} round <path>".format(title, server_url(s), CMD))
+    session = {"id": sid, "title": title, "status": AGENT, "updatedAt": now(), "server": None}
+    if hub:
+        project = project_name()
+        session["hub"] = {"url": cfg["hubUrl"], "project": project,
+                          "page": "{}/{}/{}/".format(hub["publicUrl"].rstrip("/"), project, sid)}
+    write_json(session_file(sdir), session)
+    open_browser = not os.environ.get("GRILL_NO_BROWSER")
+    if hub:
+        flush_finished(gdir)
+        try:
+            hub_sync(sdir)
+        except GrillError:
+            shutil.rmtree(str(sdir), ignore_errors=True)
+            raise
+        if open_browser:
+            webbrowser.open(session["hub"]["page"])
+        mode = "on the grill hub"
+        if not hub.get("devices"):
+            mode += ("\n  No browser is paired with the hub yet. Run `{} connect` and show the user "
+                     "the pairing code it prints.".format(CMD))
+    else:
+        session = ensure_server(sdir, open_browser=open_browser)
+        mode = "locally"
+        if cfg["useHub"] and not args.local:
+            mode += " (no grill hub answered at {})".format(cfg["hubUrl"])
+    print("Grill session started: {}\n  URL: {}\n  Runs {}\n\n"
+          "Next: write the first round to a JSON file and run:\n  {} round <path>".format(
+              title, server_url(session), mode, CMD))
 
 
 def cmd_round(args):
@@ -314,18 +425,45 @@ def cmd_round(args):
     except ValueError as e:
         raise GrillError("{} is not valid JSON: {}\n\nExpected shape:\n{}".format(path, e, ROUND_EXAMPLE))
     questions = validate_round(data, path)
-    s = ensure_server(sdir)
+    if not s.get("hub"):
+        s = ensure_server(sdir)
     n = round_count(sdir) + 1
     write_json(round_file(sdir, n), {"questions": questions})
     update_session(sdir, status=USER)
+    if s.get("hub"):
+        try:
+            hub_sync(sdir)
+        except HubDown as e:
+            # the round is saved; `wait` pushes it once the hub is back
+            raise GrillError("round {} is saved, but it didn't reach the hub: {}".format(n, hub_down_message(e)))
     print("Round {} sent: {} question{}. The user answers it at {}\n\n"
           "Next, run this and don't end your turn until it prints the answers:\n  {} wait\n"
           "(Add --timeout <seconds> if your shell tool has a time limit.)".format(n, len(questions), "" if len(questions) == 1 else "s", server_url(s), CMD))
 
 
+def hub_poll(sdir, s, n, seconds):
+    """Wait up to `seconds` on the hub. Copies the answers into .grill/ once the user submits round n."""
+    code, state = hub_call(s["hub"]["url"], "GET", "/api/sessions/{}?round={}&wait={}".format(s["id"], n, seconds),
+                           timeout=seconds + 10)
+    if code == 404 or (code == 200 and state["round"] < n):
+        hub_sync(sdir)  # the hub lost the session or missed a round: send it again
+    elif code != 200:
+        raise GrillError("the grill hub answered {}: {}".format(code, state.get("error", "")))
+    elif state["status"] == FINISHED:
+        raise GrillError("the session was finished on the hub, so there are no answers to wait for")
+    elif state["status"] == AGENT and state["round"] == n:
+        answers = {q["id"]: q.get("answer") for q in state["questions"]}
+        data = read_json(round_file(sdir, n))
+        for q in data["questions"]:
+            q["answer"] = answers.get(q["id"])
+        write_json(round_file(sdir, n), data)
+        update_session(sdir, status=AGENT)
+
+
 def cmd_wait(args):
     sdir = require_active()
     checked, deadline = 0, time.time() + args.timeout if args.timeout else None
+    warned = False
     while True:
         s = read_json(session_file(sdir))
         if s["status"] == FINISHED:
@@ -342,6 +480,26 @@ def cmd_wait(args):
                   "Run the same command again now, and don't end your turn:\n"
                   "  {} wait --timeout {}".format(round_count(sdir), CMD, args.timeout))
             return 2
+        if s.get("hub"):
+            seconds = 25 if not deadline else max(1, min(25, int(deadline - time.time())))
+            try:
+                hub_poll(sdir, s, round_count(sdir), seconds)
+            except HubDown as e:
+                # no fallback to a local server: keep trying for a while, then stop and say why.
+                # The outage start is saved, so repeated `wait --timeout` runs share one retry window
+                down_since = s.get("hubDownSince") or update_session(sdir, hubDownSince=time.time())["hubDownSince"]
+                if time.time() - down_since > HUB_RETRY_SECONDS:
+                    raise GrillError(hub_down_message(e))
+                if not warned:
+                    print("{}. Retrying for up to {} minutes.".format(e, HUB_RETRY_SECONDS // 60), file=sys.stderr, flush=True)
+                    warned = True
+                time.sleep(3)
+                continue
+            if s.get("hubDownSince"):
+                update_session(sdir, hubDownSince=None)
+                print("The grill hub is back.", file=sys.stderr, flush=True)
+            warned = False
+            continue
         # the server may have shut down while idle; the user needs it to submit
         if time.time() - checked > 10:
             ensure_server(sdir)
@@ -352,7 +510,14 @@ def cmd_wait(args):
 def cmd_finish(args):
     sdir = require_active()
     s = read_json(session_file(sdir))
-    if ping(s):
+    if s.get("hub"):
+        update_session(sdir, status=FINISHED)
+        try:
+            hub_sync(sdir)
+        except HubDown as e:
+            update_session(sdir, hubPending=True)  # the next `start` here tells the hub
+            print("Note: {}, so it still lists this session as active.".format(e), file=sys.stderr)
+    elif ping(s):
         stop_server(sdir, s)
     else:
         update_session(sdir, status=FINISHED)
@@ -364,7 +529,16 @@ def cmd_status(args):
     if not sdir:
         print('No active grill session in this folder.\n\nStart one with:\n  {} start --title "<session title>"'.format(CMD))
         return
-    s = ensure_server(sdir)
+    s = read_json(session_file(sdir))
+    where = ""
+    if s.get("hub"):
+        try:
+            hub_call(s["hub"]["url"], "GET", "/api/ping", timeout=2)
+            where = "\nRuns:   on the grill hub"
+        except HubDown as e:
+            where = "\nRuns:   on the grill hub, which isn't answering: {}".format(e)
+    else:
+        s = ensure_server(sdir)
     n = round_count(sdir)
     if s["status"] == USER:
         nxt = "the user is answering round {}. Run:\n  {} wait".format(n, CMD)
@@ -373,7 +547,20 @@ def cmd_status(args):
                "with `round <path>`, or end the session with `finish`.".format(n, CMD))
     else:
         nxt = "write the first round to a JSON file and run:\n  {} round <path>".format(CMD)
-    print("Title:  {}\nStatus: {}\nRound:  {}\nURL:    {}\n\nNext: {}".format(s["title"], s["status"], n, server_url(s), nxt))
+    print("Title:  {}\nStatus: {}\nRound:  {}\nURL:    {}{}\n\nNext: {}".format(
+        s["title"], s["status"], n, server_url(s), where, nxt))
+
+
+def cmd_connect(args):
+    cfg = load_config(grill_dir())
+    try:
+        code, info = hub_call(cfg["hubUrl"], "POST", "/api/pair-codes", {})
+    except HubDown as e:
+        raise GrillError("{}. Start the hub first: see scripts/grill-hub in the ang-skills repo.".format(e))
+    if code != 200:
+        raise GrillError("the grill hub answered {}: {}".format(code, info.get("error", "")))
+    print("Pairing code: {}\n  Open {} on the device and enter it. It works once and expires in {} minutes.\n\n"
+          "Show the user this code and link.".format(info["code"], info["pairUrl"], info["expiresInMinutes"]))
 
 
 # ---------- the server ----------
@@ -414,10 +601,16 @@ def clean_answer(q, a):
 
 
 class Handler(BaseHTTPRequestHandler):
+    """The page's API. The hub subclasses it and serves many sessions by overriding route()."""
     server_version = "grill"
 
     def log_message(self, fmt, *args):
         pass
+
+    def route(self):
+        """Sets self.sdir and returns the path to serve, or None if the request was already answered."""
+        self.sdir = self.server.sdir
+        return self.path.split("?")[0]
 
     def send(self, code, body, ctype="application/json; charset=utf-8"):
         if not isinstance(body, bytes):
@@ -430,14 +623,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        srv, path = self.server, self.path.split("?")[0]
+        srv, path = self.server, self.route()
+        if path is None:
+            return
         if path == "/api/ping":
             return self.send(200, {"id": srv.session_id})
         if path == "/api/events":
             return self.events()
         srv.touch()
         if path == "/api/state":
-            return self.send(200, page_state(srv.sdir))
+            return self.send(200, page_state(self.sdir))
         name = "index.html" if path == "/" else path.lstrip("/")
         f = (PAGE_DIR / name).resolve()
         if f.parent != PAGE_DIR or not f.is_file():
@@ -449,7 +644,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, body, types.get(f.suffix, "application/octet-stream") + "; charset=utf-8")
 
     def do_POST(self):
-        srv, path = self.server, self.path.split("?")[0]
+        srv, path = self.server, self.route()
+        if path is None:
+            return
         srv.touch()
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -458,15 +655,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": "invalid JSON"})
         with srv.lock:
             if path == "/api/finish":
-                update_session(srv.sdir, status=FINISHED)
+                update_session(self.sdir, status=FINISHED)
                 return self.send(200, {"ok": True})
             if path not in ("/api/answer", "/api/submit"):
                 return self.send(404, {"error": "not found"})
             # the server only writes during the user's turn, and only to the round on screen
-            s, n = read_json(session_file(srv.sdir)), round_count(srv.sdir)
+            s, n = read_json(session_file(self.sdir)), round_count(self.sdir)
             if s["status"] != USER or body.get("round") != n:
                 return self.send(409, {"error": "this round is closed", "status": s["status"], "round": n})
-            data = read_json(round_file(srv.sdir, n))
+            data = read_json(round_file(self.sdir, n))
             by_id = {q["id"]: q for q in data["questions"]}
             items = body.get("answers") if path == "/api/submit" else [body]
             try:
@@ -477,9 +674,9 @@ class Handler(BaseHTTPRequestHandler):
                     q["answer"] = clean_answer(q, item)
             except (ValueError, AttributeError) as e:
                 return self.send(400, {"error": str(e)})
-            write_json(round_file(srv.sdir, n), data)
+            write_json(round_file(self.sdir, n), data)
             if path == "/api/submit":
-                update_session(srv.sdir, status=AGENT)
+                update_session(self.sdir, status=AGENT)
         self.send(200, {"ok": True})
 
     def events(self):
@@ -491,10 +688,10 @@ class Handler(BaseHTTPRequestHandler):
         last, sent_at = None, 0
         try:
             while not self.server.stopping:
-                version = files_version(self.server.sdir)
+                version = files_version(self.sdir)
                 if version != last:
                     try:
-                        payload = json.dumps(page_state(self.server.sdir), ensure_ascii=False)
+                        payload = json.dumps(page_state(self.sdir), ensure_ascii=False)
                     except (OSError, ValueError):
                         payload = None  # caught mid-change; try again next tick
                     if payload:
@@ -564,6 +761,7 @@ def main():
     sub = p.add_subparsers(dest="command", metavar="command")
     sp = sub.add_parser("start", help="start a session, its server, and open the page")
     sp.add_argument("--title", required=True, help="short title shown on the page")
+    sp.add_argument("--local", action="store_true", help="use a local server even if a grill hub is running")
     sp = sub.add_parser("round", help="send the next round from a JSON file")
     sp.add_argument("path", help="JSON file with {\"questions\": [{title, body, choices}]}")
     sp = sub.add_parser("wait", help="block until the user submits the round, then print the answers")
@@ -571,12 +769,13 @@ def main():
                     help="give up after this many seconds (exit code 2); set it below your shell tool's time limit")
     sub.add_parser("finish", help="end the session and stop its server")
     sub.add_parser("status", help="show the active session, its URL, and what to do next")
+    sub.add_parser("connect", help="print a one-time code to pair a browser with the grill hub")
     sp = sub.add_parser("serve")  # internal: the background server
     sp.add_argument("sdir")
     sp.add_argument("--open", action="store_true")
     args = p.parse_args()
     commands = {"start": cmd_start, "round": cmd_round, "wait": cmd_wait,
-                "finish": cmd_finish, "status": cmd_status, "serve": cmd_serve}
+                "finish": cmd_finish, "status": cmd_status, "connect": cmd_connect, "serve": cmd_serve}
     if not args.command:
         p.print_help()
         return 1

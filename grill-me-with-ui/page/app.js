@@ -137,7 +137,7 @@ const timers = {};
 function saveAnswer(id, answer, { now }) {
   clearTimeout(timers[id]);
   const round = shown.round;
-  const send = () => post("/api/answer", { round, id, choice: answer.choice, text: answer.text });
+  const send = () => post("api/answer", { round, id, choice: answer.choice, text: answer.text });
   if (now) send();
   else timers[id] = setTimeout(send, 400);
 }
@@ -148,7 +148,7 @@ async function submitRound(answers) {
   api.close();
   // the note sits after the last question, so scroll down to it
   glide(root.scrollHeight);
-  if (!(await post("/api/submit", { round: shown.round, answers }))) {
+  if (!(await post("api/submit", { round: shown.round, answers }))) {
     document.body.classList.remove("is-submitted");
     api.reopen();
   }
@@ -236,7 +236,7 @@ function mountRound(s) {
 
 // the server pushes the whole state whenever the session files change
 function connect() {
-  const events = new EventSource("/api/events");
+  const events = new EventSource("api/events");
   let lost = false;
   events.onmessage = (e) => {
     if (lost) hideAlert();

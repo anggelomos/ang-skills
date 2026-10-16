@@ -14,15 +14,16 @@ Run them from the project's root folder. `<skill-dir>` is the folder this file i
 
 | Command | What it does |
 |---|---|
-| `python3 <skill-dir>/grill.py start --title "<title>"` | Starts the session and its server, and opens the page. |
+| `python3 <skill-dir>/grill.py start --title "<title>" [--local]` | Starts the session and its server, and opens the page. If a grill hub is running, the session uses it unless you pass `--local`. |
 | `python3 <skill-dir>/grill.py round <path>` | Sends the round in the JSON file at `<path>`. |
 | `python3 <skill-dir>/grill.py wait [--timeout <seconds>]` | Waits until the user submits the round, then prints their answers. |
 | `python3 <skill-dir>/grill.py finish` | Ends the session and stops the server. |
 | `python3 <skill-dir>/grill.py status` | Shows the session, its URL and what to do next. |
+| `python3 <skill-dir>/grill.py connect` | Prints a one-time code that pairs a browser with the grill hub. |
 
 ## The loop
 
-1. **Start.** Run `start` with a short title for what's being grilled. Tell the user the URL it prints, in one line.
+1. **Start.** Run `start` with a short title for what's being grilled. Tell the user the URL it prints, in one line. Pass `--local` only if the user asks for a local session. If `start` says no browser is paired with the hub, run `connect` and give the user the code and link it prints. Do the same whenever the user asks to pair a device.
 2. **Send a round.** Instead of printing the round in the chat, write it to a JSON file, for example `.grill/next-round.json`:
    ```json
    {

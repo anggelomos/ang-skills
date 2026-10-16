@@ -20,7 +20,7 @@ Copy this folder into your agent's skills folder, for example `~/.claude/skills/
 
 ```
 .grill/
-  config.json              { "theme": "system", "idleTimeoutMinutes": 120 }
+  config.json              { "theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "hubUrl": "http://127.0.0.1:7171" }
   sessions/<uuid>/
     session.json           title, status, server port
     round-1.json           the round's questions and your answers
@@ -35,8 +35,13 @@ Copy this folder into your agent's skills folder, for example `~/.claude/skills/
 | `grill.py wait [--timeout <s>]` | Waits until you submit, then prints `Q1: <answer>` lines. With `--timeout`, it gives up cleanly so the agent can run it again. |
 | `grill.py finish` | Ends the session and stops the server. |
 | `grill.py status` | Shows the session, its URL and what to do next. |
+| `grill.py connect` | Prints a one-time code that pairs a browser with the grill hub. |
 
 `.grill/` contains its own `.gitignore`, so session files never end up in your repo. In `config.json`, `theme` can be `system`, `light` or `dark`.
+
+## Answering from another device
+
+The optional [grill hub](../scripts/grill-hub/) is a small Docker container that serves your sessions outside localhost, for example through a Cloudflare tunnel. It has a dashboard of your active sessions and pairs devices with a one-time code. When the hub is running, `start` uses it automatically. Use `start --local` or `"useHub": false` in `config.json` to opt out.
 
 ## Credits
 
