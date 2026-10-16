@@ -1,6 +1,7 @@
 // Round behavior: answer state, hover-to-focus, and keyboard shortcuts. The page supplies
 // `render(question, index)` returning markup with: [data-q="<id>"] on the question root,
-// [data-chip="<n>"] buttons, and one [data-text] textarea. Buttons anywhere with
+// [data-chip="<n>"] choices (role="button" elements, not <button>s, so their text can be
+// selected and copied), and one [data-text] textarea. Buttons anywhere with
 // [data-action="copy"|"done"|"jump"] are wired automatically.
 (function () {
   const esc = (s) =>
@@ -138,6 +139,12 @@
     // Scrolling under a still cursor fires mouseenter/mousemove too; only a cursor that actually
     // moved should steal focus, or keyboard navigation would jump to whatever card lands under it.
     let lastPointer = null;
+    // Text selected on the page (not inside an answer box) is something the user wants to copy.
+    // Focusing an input clears it, so hover-to-focus waits until it's gone.
+    const hasSelection = () => {
+      const s = getSelection(), a = document.activeElement;
+      return !!s && !s.isCollapsed && !(a && /^(TEXTAREA|INPUT)$/.test(a.tagName));
+    };
     cards.forEach((el, i) => {
       // pointermove + pointerType skips the fake mouse moves phones send with every tap
       on(el, "pointermove", (e) => {
@@ -145,7 +152,8 @@
         const moved = !lastPointer || lastPointer[0] !== e.screenX || lastPointer[1] !== e.screenY;
         lastPointer = [e.screenX, e.screenY];
         if (!moved || (current === i && el.contains(document.activeElement))) return;
-        if (!el.contains(document.activeElement)) inputs[i].focus({ preventScroll: true });
+        // a held button means a drag is selecting text
+        if (!el.contains(document.activeElement) && !e.buttons && !hasSelection()) inputs[i].focus({ preventScroll: true });
         current = i;
         sync();
       });
@@ -155,7 +163,18 @@
           sync();
         }
       });
-      el.querySelectorAll("[data-chip]").forEach((b) => on(b, "click", () => pick(i, Number(b.dataset.chip))));
+      // a drag that selected text in an answer is a copy, not a pick
+      el.querySelectorAll("[data-chip]").forEach((b) => on(b, "click", () => {
+        if (hasSelection() && getSelection().containsNode(b, true)) return;
+        pick(i, Number(b.dataset.chip));
+      }));
+      // what a <button> does on its own: Enter and Space press it
+      el.querySelectorAll("[data-chip]").forEach((b) => on(b, "keydown", (e) => {
+        if ((e.key === "Enter" || e.key === " ") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+          e.preventDefault();
+          b.click();
+        }
+      }));
       on(inputs[i], "input", () => {
         state[qs[i].id].text = inputs[i].value;
         sync();
@@ -211,6 +230,12 @@
       on(b, "click", () => setCurrent(Number(b.dataset.index)))
     );
 
+    const lockChips = (locked) =>
+      cards.forEach((c) => c.querySelectorAll("[data-chip]").forEach((b) => {
+        b.setAttribute("aria-disabled", String(locked));
+        b.tabIndex = locked ? -1 : 0;
+      }));
+
     sync();
     return {
       setCurrent,
@@ -218,12 +243,12 @@
       close() {
         closed = true;
         inputs.forEach((t) => (t.readOnly = true));
-        cards.forEach((c) => c.querySelectorAll("[data-chip]").forEach((b) => (b.disabled = true)));
+        lockChips(true);
       },
       reopen() {
         closed = false;
         inputs.forEach((t) => (t.readOnly = false));
-        cards.forEach((c) => c.querySelectorAll("[data-chip]").forEach((b) => (b.disabled = false)));
+        lockChips(false);
       },
       destroy: () => ac.abort(),
     };

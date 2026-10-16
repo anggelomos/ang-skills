@@ -147,7 +147,7 @@
     background: var(--paper); border: 0; padding: 6px 14px; margin: 3px;
     box-shadow: 0 -3px 0 0 var(--edge), 0 3px 0 0 var(--edge-lo), -3px 0 0 0 var(--edge), 3px 0 0 0 var(--edge-lo);
   }
-  .chip kbd { font: inherit; font-weight: 600; color: var(--ink-dim); margin-right: 8px; }
+  .chip kbd { font: inherit; font-weight: 600; color: var(--ink-dim); margin-right: 8px; user-select: none; }
   .chip:hover { background: var(--ember-soft); }
   .chip[aria-pressed="true"] {
     background: var(--ember); color: #fff;
@@ -308,9 +308,9 @@
   .chip { text-align: left; }
   .chip .rec-mark { display: inline-block; margin-right: 8px; vertical-align: -1px; }
   .chip[aria-pressed="true"] .rec-mark rect { fill: #fff; }
-  .chip:disabled { cursor: default; }
-  .chip:disabled:hover { background: var(--paper); }
-  .chip[aria-pressed="true"]:disabled:hover { background: var(--ember); }
+  .chip[aria-disabled="true"] { cursor: default; }
+  .chip[aria-disabled="true"]:hover { background: var(--paper); }
+  .chip[aria-pressed="true"][aria-disabled="true"]:hover { background: var(--ember); }
 
   /* before the first round, and after the session: just the title and a note */
   .sent .loader { margin-left: 10px; }

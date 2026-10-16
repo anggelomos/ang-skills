@@ -180,8 +180,8 @@ function apply(s) {
 
 function render(q) {
   const chips = q.choices.map((c, n) =>
-    `<button class="chip" data-chip="${n}" aria-pressed="false"${n === 0 ? ' title="Recommended"' : ""}>` +
-    `<kbd>${n + 1}</kbd>${n === 0 ? arrow : ""}${inline(c)}</button>`).join("");
+    `<div class="chip" role="button" tabindex="0" data-chip="${n}" aria-pressed="false"${n === 0 ? ' title="Recommended"' : ""}>` +
+    `<kbd>${n + 1}</kbd>${n === 0 ? arrow : ""}${inline(c)}</div>`).join("");
   return `
     <section class="q" data-q="${q.id}" aria-labelledby="${q.id}-t">
       <span class="q-id">${q.id}</span>
