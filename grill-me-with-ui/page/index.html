@@ -338,11 +338,14 @@
   .finished small { display: block; margin-top: 36px; font-size: 15px; color: var(--ink-dim); }
   @keyframes finished-in { from { opacity: 0; transform: translateY(16px); } }
 
+  /* until the first state arrives (a split second), show only the background, so nothing flickers */
+  body.is-loading .wrap, body.is-loading .theme-toggle, body.is-loading .controls { visibility: hidden; }
+
   /* the pixel font draws "fi" as a ligature that reads like "A" */
   header h1, .finished h2 { font-variant-ligatures: none; }
 </style>
 </head>
-<body class="is-empty">
+<body class="is-empty is-loading">
   <button class="theme-toggle" type="button"></button>
   <p class="alert" id="alert" role="alert"></p>
   <section class="finished" role="status">
@@ -364,7 +367,7 @@
       </aside>
       <div>
         <main id="round"></main>
-        <p class="sent" id="note" role="status">Connecting to the grill server…</p>
+        <p class="sent" id="note" role="status"></p>
       </div>
     </div>
   </div>

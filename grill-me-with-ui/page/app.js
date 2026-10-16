@@ -160,6 +160,7 @@ function setNote(html) {
 const loader = '<span class="loader" aria-hidden="true"><i></i><i></i><i></i></span>';
 
 function apply(s) {
+  document.body.classList.remove("is-loading");
   document.title = `${s.title} · Grill`;
   $("#topic").textContent = s.title;
   const empty = s.round === 0, finished = s.status === FINISHED;
@@ -247,7 +248,8 @@ function connect() {
   events.onerror = () => {
     if (shown && shown.status === FINISHED) return events.close();
     lost = true;
-    showAlert("Lost the connection to the grill server. Reconnecting…", { sticky: true });
+    showAlert(shown ? "Lost the connection to the grill server. Reconnecting…"
+      : "Can't reach the grill server. Retrying…", { sticky: true });
   };
 }
 connect();
