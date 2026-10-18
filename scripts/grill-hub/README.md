@@ -15,9 +15,10 @@ The hub listens on two ports:
 | `7170` (public) | The dashboard and the session pages. Point your tunnel or reverse proxy here. | Paired browsers only |
 | `7171` (agent) | `grill.py` on the same machine. | None, so never expose it |
 
-`.grill/` in your project stays the agent's source of truth. `grill.py` pushes every change to the hub. `wait` collects your answers from the hub and writes them back into `.grill/`.
+`.grill/` in your project stays the agent's source of truth. `grill.py` pushes every change to the hub. While it waits, `wait` copies your draft answers from the hub into `.grill/`, and once you submit, it copies the final answers and returns.
 
 - **Choosing the hub.** `start` checks whether a hub answers at `http://127.0.0.1:7171`. If one does, the session runs on the hub; otherwise it runs locally, as without the hub. That choice is fixed for the whole session.
+- **Draft answers.** The page saves each answer to the hub as you give it, so a reload, a closed tab or another device picks up where you left off. Answers the hub hasn't confirmed wait in the browser and are sent again once it's back. A draft never counts as a submission. `wait` only returns after you submit.
 - **When the hub goes down.** A hub session never falls back to a local server. `wait` retries for 5 minutes, then stops with an error that says how to continue. Rounds already sent stay in `.grill/`, and the hub gets them again once it's back.
 
 ## Run it

@@ -4,17 +4,21 @@
 Both meet in .grill/ in the folder the agent works in:
 
   .grill/config.json                  {"theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "hubUrl": "..."}
-  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}, hub: {url, page}}
+  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}, hub: {url, page}, openRound}
   .grill/sessions/<uuid>/round-N.json {"questions": [{id, title, body, choices, answer}]}
 
 The status says whose turn it is, and only that side writes:
   agent_writing_round  the agent, through `round`, `finish`
-  user_writing_round   the server, saving the user's answers
+  user_writing_round   the server, saving each answer as the user gives it. Until the user submits,
+                       those answers are drafts: `wait` returns only after the submit
   session_finished     nobody
 
 If a grill hub (scripts/grill-hub in the repo) answers at hubUrl when the session starts, the session
 uses it instead of a local server: every change is pushed to the hub, and `wait` copies the user's
-answers back into .grill/. The choice is made once, at `start`, and never changes for that session.
+answers (drafts included) back into .grill/. The choice is made once, at `start`, and never changes for that session.
+
+`finish` during the user's turn records the open round, and the first round of the next session in the
+folder gets the drafts back for the questions it asks again, so restarting a session doesn't lose them.
 
 Commands: start --title "..." [--local], round <path>, wait [--timeout SECONDS], finish, status, connect.
 Python 3.8+, standard library only.
@@ -165,6 +169,17 @@ def round_file(sdir, n):
 def latest_questions(sdir):
     n = round_count(sdir)
     return read_json(round_file(sdir, n))["questions"] if n else []
+
+
+def copy_answers(sdir, n, questions):
+    """Write the answers in `questions` (from the hub) into round n in .grill/, if they changed."""
+    answers = {q["id"]: q.get("answer") for q in questions}
+    data = read_json(round_file(sdir, n))
+    if all(q.get("answer") == answers.get(q["id"]) for q in data["questions"]):
+        return
+    for q in data["questions"]:
+        q["answer"] = answers.get(q["id"])
+    write_json(round_file(sdir, n), data)
 
 
 # ---------- server process (started and found by the CLI) ----------
@@ -360,6 +375,38 @@ def format_answers(questions):
     return "\n".join(lines)
 
 
+def carry_drafts(sdir, questions):
+    """Fill in the draft answers the user left in the round still open when this folder's last session was
+    finished, for the questions asked again (same title). Choices carry over only if they're unchanged.
+    Returns how many answers carried over. They stay drafts: the user still submits the round."""
+    previous = []
+    for f in sdir.parent.glob("*/session.json"):
+        try:
+            s = read_json(f)
+        except (OSError, ValueError):
+            continue
+        if f.parent != sdir and s.get("status") == FINISHED:
+            previous.append((s.get("updatedAt", ""), f.parent, s.get("openRound")))
+    if not previous:
+        return 0
+    _, pdir, n = max(previous, key=lambda p: p[0])
+    try:
+        old = {q["title"]: q for q in read_json(round_file(pdir, n))["questions"] if q.get("answer")} if n else {}
+    except (OSError, ValueError, KeyError):
+        return 0
+    carried = 0
+    for q in questions:
+        o = old.get(q["title"])
+        if not o:
+            continue
+        choice = o["answer"].get("choice") if o["choices"] == q["choices"] else None
+        text = o["answer"].get("text") or ""
+        if choice is not None or text.strip():
+            q["answer"] = {"choice": choice, "text": text}
+            carried += 1
+    return carried
+
+
 # ---------- commands ----------
 
 def cmd_start(args):
@@ -428,6 +475,7 @@ def cmd_round(args):
     if not s.get("hub"):
         s = ensure_server(sdir)
     n = round_count(sdir) + 1
+    carried = carry_drafts(sdir, questions) if n == 1 else 0
     write_json(round_file(sdir, n), {"questions": questions})
     update_session(sdir, status=USER)
     if s.get("hub"):
@@ -436,13 +484,17 @@ def cmd_round(args):
         except HubDown as e:
             # the round is saved; `wait` pushes it once the hub is back
             raise GrillError("round {} is saved, but it didn't reach the hub: {}".format(n, hub_down_message(e)))
-    print("Round {} sent: {} question{}. The user answers it at {}\n\n"
+    print("Round {} sent: {} question{}. The user answers it at {}\n{}\n"
           "Next, run this and don't end your turn until it prints the answers:\n  {} wait\n"
-          "(Add --timeout <seconds> if your shell tool has a time limit.)".format(n, len(questions), "" if len(questions) == 1 else "s", server_url(s), CMD))
+          "(Add --timeout <seconds> if your shell tool has a time limit.)".format(
+              n, len(questions), "" if len(questions) == 1 else "s", server_url(s),
+              "The user's draft answers to {} of these questions carried over from the previous session.\n".format(carried)
+              if carried else "", CMD))
 
 
 def hub_poll(sdir, s, n, seconds):
-    """Wait up to `seconds` on the hub. Copies the answers into .grill/ once the user submits round n."""
+    """Wait up to `seconds` on the hub. Copies the user's draft answers to round n into .grill/, so a hub that
+    loses the session gets them back, and hands the turn back to the agent once the user submits."""
     code, state = hub_call(s["hub"]["url"], "GET", "/api/sessions/{}?round={}&wait={}".format(s["id"], n, seconds),
                            timeout=seconds + 10)
     if code == 404 or (code == 200 and state["round"] < n):
@@ -451,13 +503,10 @@ def hub_poll(sdir, s, n, seconds):
         raise GrillError("the grill hub answered {}: {}".format(code, state.get("error", "")))
     elif state["status"] == FINISHED:
         raise GrillError("the session was finished on the hub, so there are no answers to wait for")
-    elif state["status"] == AGENT and state["round"] == n:
-        answers = {q["id"]: q.get("answer") for q in state["questions"]}
-        data = read_json(round_file(sdir, n))
-        for q in data["questions"]:
-            q["answer"] = answers.get(q["id"])
-        write_json(round_file(sdir, n), data)
-        update_session(sdir, status=AGENT)
+    elif state["round"] == n:
+        copy_answers(sdir, n, state["questions"])
+        if state["status"] == AGENT:
+            update_session(sdir, status=AGENT)
 
 
 def cmd_wait(args):
@@ -510,7 +559,18 @@ def cmd_wait(args):
 def cmd_finish(args):
     sdir = require_active()
     s = read_json(session_file(sdir))
+    # remember a round the user was still answering, so a session started again here gets its drafts back
+    open_round = round_count(sdir) if s["status"] == USER else None
+    if open_round:
+        update_session(sdir, openRound=open_round)
     if s.get("hub"):
+        if open_round:
+            try:
+                code, state = hub_call(s["hub"]["url"], "GET", "/api/sessions/{}?round={}".format(s["id"], open_round))
+                if code == 200 and state["round"] == open_round:
+                    copy_answers(sdir, open_round, state["questions"])
+            except HubDown:
+                pass  # the drafts `wait` already copied are all there is
         update_session(sdir, status=FINISHED)
         try:
             hub_sync(sdir)

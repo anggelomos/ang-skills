@@ -1,5 +1,5 @@
 // The Ember Grate page. It renders only what the server sends from the session files, saves each
-// answer as you give it, and swaps in the next round as soon as the agent sends it.
+// answer as a draft as you give it, and swaps in the next round as soon as the agent sends it.
 const { md, inline } = Grill;
 const root = document.documentElement;
 const $ = (s) => document.querySelector(s);
@@ -117,30 +117,71 @@ function showAlert(text, { sticky = false } = {}) {
 }
 const hideAlert = () => alertBox.classList.remove("is-on");
 
-async function post(url, data) {
+// returns the HTTP status, or 0 if the server couldn't be reached
+async function post(url, data, { keepalive = false } = {}) {
+  let status = 0;
   try {
-    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data), keepalive });
+    status = r.status;
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-    return true;
   } catch (e) {
     showAlert(`Couldn't save: ${e.message}`);
-    return false;
   }
+  return status;
 }
+const ok = (status) => status >= 200 && status < 300;
 
 let shown = null; // the round number and status on screen
 let api = null;
 let questions = [];
+let sessionId = null;
+
+// The server keeps each answer as a draft until the round is submitted. Answers it hasn't confirmed yet
+// also wait in localStorage, so closing or reloading the page, or a dropped connection, doesn't lose them:
+// the next load puts them back and sends them again
+const draftKey = (round) => `grill-unsaved:${sessionId}:${round}`;
+function unsaved(round) {
+  try {
+    return JSON.parse(localStorage.getItem(draftKey(round))) || {};
+  } catch (e) {
+    return {};
+  }
+}
+function setUnsaved(round, answers) {
+  try {
+    if (Object.keys(answers).length) localStorage.setItem(draftKey(round), JSON.stringify(answers));
+    else localStorage.removeItem(draftKey(round));
+  } catch (e) {} // no storage (private mode, full): the server's copy still works
+}
 
 // a pick saves right away; typing saves once you pause
 const timers = {};
 function saveAnswer(id, answer, { now }) {
   clearTimeout(timers[id]);
   const round = shown.round;
-  const send = () => post("api/answer", { round, id, choice: answer.choice, text: answer.text });
-  if (now) send();
-  else timers[id] = setTimeout(send, 400);
+  setUnsaved(round, { ...unsaved(round), [id]: { choice: answer.choice, text: answer.text } });
+  if (now) sendAnswer(round, id);
+  else timers[id] = setTimeout(() => sendAnswer(round, id), 400);
 }
+
+async function sendAnswer(round, id, opts) {
+  clearTimeout(timers[id]);
+  delete timers[id];
+  const a = unsaved(round)[id];
+  if (!a) return;
+  const status = await post("api/answer", { round, id, ...a }, opts);
+  // keep the local copy if the server never got it; drop it once saved, or refused for good (the round closed)
+  if (!status || status === 401 || status >= 500) return;
+  const left = unsaved(round);
+  if (JSON.stringify(left[id]) === JSON.stringify(a)) delete left[id];
+  setUnsaved(round, left);
+}
+const sendUnsaved = (round, opts) => Object.keys(unsaved(round)).forEach((id) => sendAnswer(round, id, opts));
+
+// a phone switching apps or a closing tab: send what's still waiting on the typing pause now
+const flush = () => shown && Object.keys(timers).length && sendUnsaved(shown.round, { keepalive: true });
+addEventListener("pagehide", flush);
+document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && flush());
 
 async function submitRound(answers) {
   Object.values(timers).forEach(clearTimeout);
@@ -148,7 +189,10 @@ async function submitRound(answers) {
   api.close();
   // the note sits after the last question, so scroll down to it
   glide(root.scrollHeight);
-  if (!(await post("api/submit", { round: shown.round, answers }))) {
+  const round = shown.round;
+  if (ok(await post("api/submit", { round, answers }))) {
+    setUnsaved(round, {});
+  } else {
     document.body.classList.remove("is-submitted");
     api.reopen();
   }
@@ -163,6 +207,7 @@ function apply(s) {
   document.body.classList.remove("is-loading");
   document.title = `${s.title} · Grill`;
   $("#topic").textContent = s.title;
+  sessionId = s.id;
   const empty = s.round === 0, finished = s.status === FINISHED;
   document.body.classList.toggle("is-empty", empty);
   document.body.classList.toggle("is-finished", finished);
@@ -195,7 +240,10 @@ function render(q) {
 
 function mountRound(s) {
   if (api) api.destroy();
-  questions = s.questions;
+  // answers this browser gave that the server hasn't confirmed win over the server's copy, until it has them
+  const open = s.status !== AGENT && s.status !== FINISHED, mine = open ? unsaved(s.round) : {};
+  if (!open) setUnsaved(s.round, {});
+  questions = s.questions.map((q) => (mine[q.id] ? { ...q, answer: mine[q.id] } : q));
   skewer.innerHTML = '<span class="ring"></span>' + questions.map((q, i) =>
     `<button class="chunk" data-action="jump" data-index="${i}" aria-label="Go to ${q.id}">${raw}${cooked}</button>`).join("");
   api = Grill.mount({
@@ -233,23 +281,29 @@ function mountRound(s) {
   fitBar();
   window.scrollTo(0, 0);
   if (!phone.matches) api.setCurrent(0, { scroll: false });
+  if (open) sendUnsaved(s.round);
 }
 
 // the server pushes the whole state whenever the session files change
+let lost = false;
 function connect() {
   const events = new EventSource("api/events");
-  let lost = false;
   events.onmessage = (e) => {
+    const back = lost;
     if (lost) hideAlert();
     lost = false;
     apply(JSON.parse(e.data));
+    // answers given while the connection was down
+    if (back && shown.status !== AGENT && shown.status !== FINISHED) sendUnsaved(shown.round);
   };
-  // EventSource keeps retrying on its own
+  // EventSource retries a dropped connection on its own, but gives up on an error reply,
+  // like the 502 a tunnel sends while the hub restarts, so start over then
   events.onerror = () => {
     if (shown && shown.status === FINISHED) return events.close();
     lost = true;
     showAlert(shown ? "Lost the connection to the grill server. Reconnecting…"
       : "Can't reach the grill server. Retrying…", { sticky: true });
+    if (events.readyState === EventSource.CLOSED) setTimeout(connect, 3000);
   };
 }
 connect();
