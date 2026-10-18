@@ -37,13 +37,13 @@ Run them from the project's root folder. `<skill-dir>` is the folder this file i
    }
    ```
    - `title`: the question title.
-   - `body`: the question body: context, trade-offs, options. It can be several paragraphs.
-   - `choices`: the answers the user can click. **The first one is your recommended answer.** Write each choice as the answer itself ("Use Postgres"), not "Yes". At least one choice.
+   - `body`: the context, trade-offs and options behind the question. It can be several paragraphs.
+   - `choices`: the answers the user can click. **The first one is your recommended answer.** Write each choice as the answer itself ("Use Postgres"), not "Yes". Give at least one choice.
 
-   Then run `round <path>`. If it prints problems, fix the file and run it again. Don't add IDs: they're assigned for you (Q1, Q2, …).
+   Then run `round <path>`. If it prints problems, fix the file and run it again. Don't add IDs. `round` numbers the questions Q1, Q2 and so on.
 3. **Wait for the answers, and don't end your turn until you have them.** The user is answering in the browser and won't come back to the chat to nudge you. If you end your turn before `wait` prints the answers, the session stalls.
    - **Claude Code only:** run `wait` as a background command and don't poll. Claude Code wakes you up when it finishes, so ending your turn is fine there.
-   - **Everywhere else** (Codex, Cursor, OpenCode, …): run `wait --timeout <seconds>` in the foreground, with `<seconds>` a bit below your shell tool's time limit, e.g. `--timeout 540` for a 10-minute limit. Leave `--timeout` out if there's no limit. When it prints "Still waiting", run it again right away, and keep going until it prints answers. It's safe to repeat. If you'd rather run it in the background, block on it with your harness's tool for awaiting a background command before you end your turn.
+   - **Everywhere else** (Codex, Cursor, OpenCode and others): run `wait --timeout <seconds>` in the foreground, with `<seconds>` a bit below your shell tool's time limit, for example `--timeout 540` for a 10-minute limit. Leave `--timeout` out if there's no limit. When it prints "Still waiting", run it again right away, and keep going until it prints answers. It's safe to repeat. If you'd rather run it in the background, block on it with your harness's tool for awaiting a background command before you end your turn.
 4. **Read the answers.** `wait` prints one line per question:
    ```
    Q1: Paying customers. Note: mostly enterprise
@@ -60,4 +60,4 @@ Run them from the project's root folder. `<skill-dir>` is the folder this file i
 - A round can't change once it's sent. Questions that come up while the user is answering go into the next round.
 - Never edit the files in `.grill/` by hand. The commands are the only way in.
 - If the user replies in the chat instead of the page, take that as their answer and carry on.
-- If a command fails, read its message: it says what to run next (for example, `finish` when a session is already active).
+- If a command fails, read its message. It says what to run next, for example `finish` when a session is already active.

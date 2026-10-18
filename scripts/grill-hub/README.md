@@ -1,6 +1,6 @@
 # grill-hub
 
-An optional companion to [grill-me-with-ui](../../grill-me-with-ui/). It serves your grill sessions outside localhost, so you can answer a round from your phone, or from a laptop while the agent runs on a home server.
+An optional companion to [grill-me-with-ui](../../README.md#grill-me-with-ui). It serves your grill sessions outside localhost, so you can answer a round from your phone, or from a laptop while the agent runs on a home server.
 
 - A dashboard lists your active sessions, grouped by project.
 - Each session gets its own URL: `https://<your-hub>/<project>/<session-id>/`.
