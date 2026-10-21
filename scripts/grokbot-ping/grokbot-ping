@@ -2,6 +2,7 @@
 # Best-effort webhook sender. Deliberately uses only Bash and curl.
 
 to=fabro
+to_set=0
 from=manual
 status=done
 thread=${T3_THREAD_ID:-${T3_CODE_THREAD_ID:-${T3CODE_THREAD_ID:-}}}
@@ -9,18 +10,27 @@ session=
 message=
 adapter=
 payload=
+force=0
+mode=send
+
+if [[ ${1:-} == enable || ${1:-} == disable ]]; then
+  mode=$1
+  shift
+fi
 
 while (($#)); do
   case $1 in
     --to|--from|--status|--thread|--session)
       (($# >= 2)) || exit 0
       case $1 in
-        --to) to=$2 ;; --from) from=$2 ;; --status) status=$2 ;;
+        --to) to=$2; to_set=1 ;; --from) from=$2 ;; --status) status=$2 ;;
         --thread) thread=$2 ;; --session) session=$2 ;;
       esac
       shift 2 ;;
     --claude-stop) adapter=claude; shift ;;
     --codex-notify) adapter=codex; shift; (($#)) || exit 0; payload=${!#}; break ;;
+    --opencode-idle) exit 0 ;; # No verified shell-to-plugin session key yet.
+    --force) force=1; shift ;;
     --) shift; message="$*"; break ;;
     -*) exit 0 ;;
     *) message="$*"; break ;;
@@ -28,13 +38,45 @@ while (($#)); do
 done
 
 [[ $to =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0
-config=${XDG_CONFIG_HOME:-$HOME/.config}/grokbot-ping/$to.env
-[[ -f $config ]] || exit 0
 
-# The per-user file is trusted shell syntax; keep it private (chmod 600).
-# shellcheck disable=SC1090
-. "$config"
-[[ -n ${GROKBOT_PING_URL:-} && -n ${GROKBOT_PING_KEY:-} ]] || exit 0
+# Bash tool calls share these IDs with their corresponding hook payloads.
+# A missing ID is never replaced with cwd, which can belong to many sessions.
+session_kind=
+session_key=
+if [[ -n ${CLAUDE_CODE_SESSION_ID:-} ]]; then
+  session_kind=claude; session_key=$CLAUDE_CODE_SESSION_ID
+elif [[ -n ${CODEX_THREAD_ID:-} ]]; then
+  session_kind=codex; session_key=$CODEX_THREAD_ID
+fi
+[[ $session_key =~ ^[A-Za-z0-9._-]+$ ]] || session_key=
+
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/grokbot-ping
+now=$(date +%s)
+if [[ -d $state_dir ]]; then
+  for old_marker in "$state_dir"/claude-* "$state_dir"/codex-*; do
+    [[ -f $old_marker ]] || continue
+    modified=$(date -r "$old_marker" +%s 2>/dev/null) || continue
+    if ((now-modified > 604800)); then rm -f -- "$old_marker" 2>/dev/null || :; fi
+  done
+fi
+
+if [[ $mode != send ]]; then
+  if [[ -z $session_key ]]; then
+    printf 'grokbot-ping: no supported agent session ID in this shell\n' >&2
+    exit 2
+  fi
+  marker=$state_dir/$session_kind-$session_key
+  if [[ $mode == disable ]]; then
+    rm -f -- "$marker" || exit 2
+    printf 'grokbot-ping disabled for this session\n'
+  else
+    umask 077
+    mkdir -p -- "$state_dir" || exit 2
+    printf '%s\n' "$to" > "$marker" || exit 2
+    printf 'grokbot-ping enabled for this session: %s\n' "$to"
+  fi
+  exit 0
+fi
 
 json_quote() {
   local value=$1 char output='"' i hex
@@ -89,19 +131,47 @@ truncate_json_string() {
 message_json=
 thread_json=
 session_json=
+hook_session_id=
 if [[ $adapter == claude ]]; then
   payload=$(</dev/stdin)
   json_field_raw session_id; session_json=$JSON_FIELD
+  if [[ $JSON_FIELD != null ]]; then hook_session_id=${JSON_FIELD:1:${#JSON_FIELD}-2}; fi
   json_field_raw last_assistant_message
   [[ $JSON_FIELD == null ]] || { truncate_json_string "$JSON_FIELD"; message_json=$JSON_VALUE; }
 elif [[ $adapter == codex ]]; then
   json_field_raw type
   [[ $JSON_FIELD == '"agent-turn-complete"' ]] || exit 0
   json_field_raw thread-id; thread_json=$JSON_FIELD
+  if [[ $JSON_FIELD != null ]]; then hook_session_id=${JSON_FIELD:1:${#JSON_FIELD}-2}; fi
   json_field_raw turn-id; session_json=$JSON_FIELD
   json_field_raw last-assistant-message
   [[ $JSON_FIELD == null ]] || { truncate_json_string "$JSON_FIELD"; message_json=$JSON_VALUE; }
 fi
+
+# Automatic hooks use the authoritative ID from their payload. Deliberate
+# sends use the ID exported to the agent's shell. Both must find one marker.
+if [[ -n $adapter ]]; then
+  [[ $hook_session_id =~ ^[A-Za-z0-9._-]+$ ]] || exit 0
+  marker=$state_dir/$adapter-$hook_session_id
+elif ((force == 0)); then
+  [[ -n $session_key ]] || exit 0
+  marker=$state_dir/$session_kind-$session_key
+fi
+if [[ -n $adapter ]] || ((force == 0)); then
+  [[ -f $marker ]] || exit 0
+  IFS= read -r enabled_to < "$marker" || exit 0
+  [[ $enabled_to =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
+  if ((to_set)) && [[ $to != "$enabled_to" ]]; then exit 0; fi
+  to=$enabled_to
+fi
+
+config=${XDG_CONFIG_HOME:-$HOME/.config}/grokbot-ping/$to.env
+[[ -f $config ]] || exit 0
+
+# The per-user file is trusted shell syntax; keep it private (chmod 600).
+# shellcheck disable=SC1090
+. "$config"
+[[ -n ${GROKBOT_PING_URL:-} && -n ${GROKBOT_PING_KEY:-} ]] || exit 0
 
 if [[ -z $thread_json ]]; then
   if [[ -n $thread ]]; then json_quote "$thread"; thread_json=$JSON_VALUE

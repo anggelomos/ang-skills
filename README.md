@@ -1,7 +1,7 @@
 # Ang skills
 
 - **[grill-me-with-ui](#grill-me-with-ui):** Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me), but you answer each round in a web app with clickable answers, hover-to-dictate and keyboard shortcuts. The optional [grill hub](scripts/grill-hub/) lets you answer from your phone or another computer.
-- **[notify-grokbot](#grokbot-ping):** Send deliberate bot updates when coding work is blocked, needs a decision, or reaches a handoff. Optional hooks ping automatically when a turn finishes.
+- **[notify-grokbot](#grokbot-ping):** Send bot updates only from coding sessions that explicitly opt in. Hooks ping when an enabled session finishes a turn.
 
 ## Install
 
@@ -10,6 +10,8 @@ Just ask your agent to install it for you ;)
 ## grokbot-ping
 
 [`grokbot-ping`](scripts/grokbot-ping/grokbot-ping) sends a small JSON update to a Grok Bot webhook. Get the URL and sender key from the **Grok Bot routine panel**. Put them in a private file outside this repo:
+
+**Off by default.** In the first message of a thread Fabro launches, tell the agent to run `grokbot-ping enable --to fabro` in its shell. This enables only that agent session. `grokbot-ping disable` turns it off. Automatic `done` hooks and deliberate statuses such as `blocked`, `decision`, and `handoff` silently do nothing in other sessions. `--force` is an explicit override for a deliberate manual send; hooks never honor it.
 
 ```sh
 mkdir -p ~/.config/grokbot-ping
@@ -22,7 +24,9 @@ chmod 600 ~/.config/grokbot-ping/fabro.env
 
 Run `bash scripts/grokbot-ping/install.sh` to symlink the sender into `~/.local/bin`; the script only prints agent configuration snippets and does not change those configurations. Ensure `~/.local/bin` is on each agent's `PATH`. The exact snippets are also in [`claude-stop.json`](scripts/grokbot-ping/claude-stop.json), [`codex-notify.toml`](scripts/grokbot-ping/codex-notify.toml), and [`opencode-plugin.js`](scripts/grokbot-ping/opencode-plugin.js). Merge the Claude `Stop` entry into `~/.claude/settings.json`; put the Codex `notify` line at the root of `~/.codex/config.toml`, before any table; copy the OpenCode v1 plugin to `~/.config/opencode/plugins/grokbot-ping.js`. OpenCode is not installed here, so that adapter remains untested.
 
-By default the key is sent as `Authorization: Bearer <key>`. Confirm that the routine expects this header. If it expects a different header name, set `GROKBOT_PING_KEY_HEADER='X-API-Key'` in the env file; the key is then sent as that header's raw value. A missing config or failed POST never breaks an agent turn; failures go to `~/.cache/grokbot-ping/log`. For another bot, create `~/.config/grokbot-ping/<target>.env` and pass `--to <target>`.
+By default the key is sent as `Authorization: Bearer <key>`. Confirm that the routine expects this header. If it expects a different header name, set `GROKBOT_PING_KEY_HEADER='X-API-Key'` in the env file; the key is then sent as that header's raw value. A missing config or failed POST never breaks an agent turn; failures go to `~/.cache/grokbot-ping/log`. For another bot, create `~/.config/grokbot-ping/<target>.env` and enable that target in its own session.
+
+Enable markers are stored under `~/.local/state/grokbot-ping/` (or `$XDG_STATE_HOME/grokbot-ping/`), contain only the target name, and expire after seven days. The sender uses `CLAUDE_CODE_SESSION_ID` for Claude Code 2.1.302 because Claude documents that it matches `session_id` in `Stop` hook stdin. For Codex 0.163.0, the shell's `CODEX_THREAD_ID` matches the notify payload's `thread-id`; both `CODEX_THREAD_ID` and `CODEX_SESSION_ID` had the same value in this T3 Codex thread. The hooks select markers by payload ID rather than inherited shell variables. No marker is keyed only by project directory. OpenCode's adapter has no verified shared session key on this machine and therefore stays silent under this opt-in design.
 
 The payload includes target, sender, status, T3 thread ID when an explicit `T3_THREAD_ID`, `T3_CODE_THREAD_ID`, or `T3CODE_THREAD_ID` environment variable exists, session ID, working directory, project, message, and timestamp. No T3-specific thread variable was observed in this agent environment. Codex's notify payload supplies its own thread ID and turn ID; those fill `thread_id` and `session_id` respectively. Claude and OpenCode supply their session IDs.
 

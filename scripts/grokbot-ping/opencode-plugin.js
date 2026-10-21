@@ -5,9 +5,9 @@ export const GrokbotPingPlugin = async ({ $ }) => ({
     const sessionID = event.properties?.sessionID
     try {
       if (sessionID) {
-        await $`grokbot-ping --from opencode --status done --session ${sessionID}`
+        await $`grokbot-ping --from opencode --status done --opencode-idle --session ${sessionID}`
       } else {
-        await $`grokbot-ping --from opencode --status done`
+        await $`grokbot-ping --from opencode --status done --opencode-idle`
       }
     } catch {
       // Notifications must never interrupt the agent.

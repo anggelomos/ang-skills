@@ -7,6 +7,8 @@ ln -sfn "$script_dir/grokbot-ping" "$HOME/.local/bin/grokbot-ping"
 
 cat <<'EOF'
 Added ~/.local/bin/grokbot-ping. Ensure ~/.local/bin is on PATH for the agents.
+Pings are off until the agent runs: grokbot-ping enable --to fabro
+That command opts in only the current Claude or Codex session.
 
 Add to ~/.claude/settings.json (merge into an existing "hooks" object):
 {
