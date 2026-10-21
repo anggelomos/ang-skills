@@ -153,9 +153,43 @@ thread_json=
 session_json=
 hook_session_id=
 if [[ $adapter == claude ]]; then
-  payload=$(</dev/stdin)
+  # The Stop hook may arrive without JSON on stdin in some SDK launches.
+  # Capture exact bytes only when the target's private config opts in.
+  debug_config=${XDG_CONFIG_HOME:-$HOME/.config}/grokbot-ping/$to.env
+  GROKBOT_PING_DEBUG=
+  if [[ -f $debug_config ]]; then
+    # shellcheck disable=SC1090
+    . "$debug_config"
+  fi
+  if [[ ${GROKBOT_PING_DEBUG:-} == 1 ]]; then
+    debug_dir=${XDG_CACHE_HOME:-$HOME/.cache}/grokbot-ping
+    umask 077
+    if mkdir -p -- "$debug_dir" 2>/dev/null; then
+      debug_stdin=$debug_dir/last-claude-stdin.json
+      if : > "$debug_stdin" 2>/dev/null && chmod 600 "$debug_stdin" 2>/dev/null; then
+        cat > "$debug_stdin" 2>/dev/null || :
+        payload=$(<"$debug_stdin")
+      else
+        payload=$(cat)
+      fi
+      {
+        while IFS= read -r env_name; do
+          case $env_name in CLAUDE*|T3*|CODEX*) printf '%s\n' "$env_name" ;; esac
+        done < <(compgen -e)
+      } > "$debug_dir/last-claude-env.txt" 2>/dev/null || :
+      chmod 600 "$debug_dir/last-claude-env.txt" 2>/dev/null || :
+    else
+      payload=$(cat)
+    fi
+  else
+    payload=$(cat)
+  fi
   json_field_raw session_id; session_json=$JSON_FIELD
   if [[ $JSON_FIELD != null ]]; then hook_session_id=${JSON_FIELD:1:${#JSON_FIELD}-2}; fi
+  if [[ -z $hook_session_id && -n ${CLAUDE_CODE_SESSION_ID:-} ]]; then
+    hook_session_id=$CLAUDE_CODE_SESSION_ID
+    json_quote "$hook_session_id"; session_json=$JSON_VALUE
+  fi
   json_field_raw last_assistant_message
   [[ $JSON_FIELD == null ]] || { truncate_json_string "$JSON_FIELD"; message_json=$JSON_VALUE; }
 elif [[ $adapter == codex ]]; then
