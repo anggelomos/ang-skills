@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "grokbot-ping --from claude --status done --claude-stop"
+            "command": "/home/anggelomos/.local/bin/grokbot-ping --from claude --status done --claude-stop"
           }
         ]
       }

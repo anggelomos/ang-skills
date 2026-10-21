@@ -13,7 +13,7 @@ That command opts in only the current Claude or Codex session.
 Add to ~/.claude/settings.json (merge into an existing "hooks" object):
 {
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "grokbot-ping --from claude --status done --claude-stop"}]}]
+    "Stop": [{"hooks": [{"type": "command", "command": "/home/anggelomos/.local/bin/grokbot-ping --from claude --status done --claude-stop"}]}]
   }
 }
 

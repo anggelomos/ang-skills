@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # Best-effort webhook sender. Deliberately uses only Bash and curl.
 
+log_mode=manual
+log_reason=unknown
+log_http=-
+log_curl=-
+log_invocation() {
+  local log_dir=${XDG_CACHE_HOME:-$HOME/.cache}/grokbot-ping
+  if mkdir -p -- "$log_dir" 2>/dev/null; then
+    printf '%s mode=%s reason=%s http=%s curl_exit=%s\n' \
+      "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$log_mode" "$log_reason" "$log_http" "$log_curl" \
+      >> "$log_dir/log" 2>/dev/null || :
+  fi
+}
+finish() { log_reason=$1; exit "${2:-0}"; }
+trap log_invocation EXIT
+
 to=fabro
 to_set=0
 from=manual
@@ -15,29 +30,33 @@ mode=send
 
 if [[ ${1:-} == enable || ${1:-} == disable ]]; then
   mode=$1
+  log_mode=$mode
   shift
 fi
 
 while (($#)); do
   case $1 in
     --to|--from|--status|--thread|--session)
-      (($# >= 2)) || exit 0
+      (($# >= 2)) || finish invalid_args
       case $1 in
         --to) to=$2; to_set=1 ;; --from) from=$2 ;; --status) status=$2 ;;
         --thread) thread=$2 ;; --session) session=$2 ;;
       esac
       shift 2 ;;
-    --claude-stop) adapter=claude; shift ;;
-    --codex-notify) adapter=codex; shift; (($#)) || exit 0; payload=${!#}; break ;;
-    --opencode-idle) exit 0 ;; # No verified shell-to-plugin session key yet.
-    --force) force=1; shift ;;
+    --claude-stop) adapter=claude; log_mode=claude-stop; shift ;;
+    --codex-notify) adapter=codex; log_mode=codex-notify; shift; (($#)) || finish invalid_args; payload=${!#}; break ;;
+    --opencode-idle) log_mode=opencode-idle; finish unsupported_adapter ;; # No verified shared key.
+    --force) force=1; log_mode=manual-force; shift ;;
     --) shift; message="$*"; break ;;
-    -*) exit 0 ;;
+    -*) finish invalid_args ;;
     *) message="$*"; break ;;
   esac
 done
 
-[[ $to =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0
+if [[ $adapter == claude ]]; then log_mode=claude-stop
+elif [[ $adapter == codex ]]; then log_mode=codex-notify; fi
+
+[[ $to =~ ^[a-zA-Z0-9_-]+$ ]] || finish invalid_target
 
 # Bash tool calls share these IDs with their corresponding hook payloads.
 # A missing ID is never replaced with cwd, which can belong to many sessions.
@@ -63,19 +82,20 @@ fi
 if [[ $mode != send ]]; then
   if [[ -z $session_key ]]; then
     printf 'grokbot-ping: no supported agent session ID in this shell\n' >&2
-    exit 2
+    finish no_session_id 2
   fi
   marker=$state_dir/$session_kind-$session_key
   if [[ $mode == disable ]]; then
-    rm -f -- "$marker" || exit 2
+    rm -f -- "$marker" || finish failed_state 2
     printf 'grokbot-ping disabled for this session\n'
+    finish disabled
   else
     umask 077
-    mkdir -p -- "$state_dir" || exit 2
-    printf '%s\n' "$to" > "$marker" || exit 2
+    mkdir -p -- "$state_dir" || finish failed_state 2
+    printf '%s\n' "$to" > "$marker" || finish failed_state 2
     printf 'grokbot-ping enabled for this session: %s\n' "$to"
+    finish enabled
   fi
-  exit 0
 fi
 
 json_quote() {
@@ -140,7 +160,7 @@ if [[ $adapter == claude ]]; then
   [[ $JSON_FIELD == null ]] || { truncate_json_string "$JSON_FIELD"; message_json=$JSON_VALUE; }
 elif [[ $adapter == codex ]]; then
   json_field_raw type
-  [[ $JSON_FIELD == '"agent-turn-complete"' ]] || exit 0
+  [[ $JSON_FIELD == '"agent-turn-complete"' ]] || finish ignored_event
   json_field_raw thread-id; thread_json=$JSON_FIELD
   if [[ $JSON_FIELD != null ]]; then hook_session_id=${JSON_FIELD:1:${#JSON_FIELD}-2}; fi
   json_field_raw turn-id; session_json=$JSON_FIELD
@@ -151,27 +171,27 @@ fi
 # Automatic hooks use the authoritative ID from their payload. Deliberate
 # sends use the ID exported to the agent's shell. Both must find one marker.
 if [[ -n $adapter ]]; then
-  [[ $hook_session_id =~ ^[A-Za-z0-9._-]+$ ]] || exit 0
+  [[ $hook_session_id =~ ^[A-Za-z0-9._-]+$ ]] || finish no_session_id
   marker=$state_dir/$adapter-$hook_session_id
 elif ((force == 0)); then
-  [[ -n $session_key ]] || exit 0
+  [[ -n $session_key ]] || finish no_session_id
   marker=$state_dir/$session_kind-$session_key
 fi
 if [[ -n $adapter ]] || ((force == 0)); then
-  [[ -f $marker ]] || exit 0
-  IFS= read -r enabled_to < "$marker" || exit 0
-  [[ $enabled_to =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
-  if ((to_set)) && [[ $to != "$enabled_to" ]]; then exit 0; fi
+  [[ -f $marker ]] || finish no_marker
+  IFS= read -r enabled_to < "$marker" || finish invalid_marker
+  [[ $enabled_to =~ ^[A-Za-z0-9_-]+$ ]] || finish invalid_marker
+  if ((to_set)) && [[ $to != "$enabled_to" ]]; then finish target_mismatch; fi
   to=$enabled_to
 fi
 
 config=${XDG_CONFIG_HOME:-$HOME/.config}/grokbot-ping/$to.env
-[[ -f $config ]] || exit 0
+[[ -f $config ]] || finish no_env
 
 # The per-user file is trusted shell syntax; keep it private (chmod 600).
 # shellcheck disable=SC1090
 . "$config"
-[[ -n ${GROKBOT_PING_URL:-} && -n ${GROKBOT_PING_KEY:-} ]] || exit 0
+[[ -n ${GROKBOT_PING_URL:-} && -n ${GROKBOT_PING_KEY:-} ]] || finish no_env
 
 if [[ -z $thread_json ]]; then
   if [[ -n $thread ]]; then json_quote "$thread"; thread_json=$JSON_VALUE
@@ -196,7 +216,7 @@ json_quote "$ts"; ts_json=$JSON_VALUE
 body="{\"to\":$to_json,\"from\":$from_json,\"status\":$status_json,\"thread_id\":$thread_json,\"session_id\":$session_json,\"cwd\":$cwd_json,\"project\":$project_json,\"message\":$message_json,\"ts\":$ts_json}"
 
 header=${GROKBOT_PING_KEY_HEADER:-Authorization}
-[[ $header =~ ^[A-Za-z0-9-]+$ ]] || exit 0
+[[ $header =~ ^[A-Za-z0-9-]+$ ]] || finish invalid_header
 if [[ $header == Authorization ]]; then
   auth="Authorization: Bearer $GROKBOT_PING_KEY"
 else
@@ -208,10 +228,7 @@ http_code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --header 'Content-Type: application/json' --header "$auth" \
   --data-binary "$body" "$GROKBOT_PING_URL" 2>/dev/null)
 curl_status=$?
-if ((curl_status != 0)) || [[ ! $http_code =~ ^2[0-9][0-9]$ ]]; then
-  log_dir=${XDG_CACHE_HOME:-$HOME/.cache}/grokbot-ping
-  if mkdir -p "$log_dir" 2>/dev/null; then
-    printf '%s target=%s curl_exit=%s http=%s\n' "$ts" "$to" "$curl_status" "$http_code" >> "$log_dir/log" 2>/dev/null || :
-  fi
-fi
-exit 0
+log_http=${http_code:-000}
+log_curl=$curl_status
+if ((curl_status != 0)) || [[ ! $http_code =~ ^2[0-9][0-9]$ ]]; then finish failed; fi
+finish sent
