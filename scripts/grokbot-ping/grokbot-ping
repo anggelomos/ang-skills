@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Best-effort webhook sender. Deliberately uses only Bash and curl.
+
+to=fabro
+from=manual
+status=done
+thread=${T3_THREAD_ID:-${T3_CODE_THREAD_ID:-${T3CODE_THREAD_ID:-}}}
+session=
+message=
+adapter=
+payload=
+
+while (($#)); do
+  case $1 in
+    --to|--from|--status|--thread|--session)
+      (($# >= 2)) || exit 0
+      case $1 in
+        --to) to=$2 ;; --from) from=$2 ;; --status) status=$2 ;;
+        --thread) thread=$2 ;; --session) session=$2 ;;
+      esac
+      shift 2 ;;
+    --claude-stop) adapter=claude; shift ;;
+    --codex-notify) adapter=codex; shift; (($#)) || exit 0; payload=${!#}; break ;;
+    --) shift; message="$*"; break ;;
+    -*) exit 0 ;;
+    *) message="$*"; break ;;
+  esac
+done
+
+[[ $to =~ ^[a-zA-Z0-9_-]+$ ]] || exit 0
+config=${XDG_CONFIG_HOME:-$HOME/.config}/grokbot-ping/$to.env
+[[ -f $config ]] || exit 0
+
+# The per-user file is trusted shell syntax; keep it private (chmod 600).
+# shellcheck disable=SC1090
+. "$config"
+[[ -n ${GROKBOT_PING_URL:-} && -n ${GROKBOT_PING_KEY:-} ]] || exit 0
+
+json_quote() {
+  local value=$1 char output='"' i hex
+  for ((i=0; i<${#value}; i++)); do
+    char=${value:i:1}
+    case $char in
+      '"') output+='\"' ;; '\') output+='\\' ;;
+      $'\n') output+='\n' ;; $'\r') output+='\r' ;; $'\t') output+='\t' ;;
+      $'\b') output+='\b' ;; $'\f') output+='\f' ;;
+      [[:cntrl:]]) printf -v hex '%02x' "'$char"; output+="\\u00$hex" ;;
+      *) output+=$char ;;
+    esac
+  done
+  JSON_VALUE=${output}'"'
+}
+
+# Return a string value as its original, valid JSON token. Hook payloads are
+# small JSON objects; this avoids jq, Python, and lossy shell unescaping.
+json_field_raw() {
+  local key=$1 marker rest char escaped=0 i raw='"'
+  JSON_FIELD=null
+  marker='"'${key}'"'
+  [[ $payload == *"$marker"* ]] || return
+  rest=${payload#*"$marker"}
+  [[ $rest =~ ^[[:space:]]*: ]] || return
+  rest=${rest#*:}
+  rest="${rest#"${rest%%[![:space:]]*}"}"
+  [[ ${rest:0:1} == '"' ]] || return
+  for ((i=1; i<${#rest}; i++)); do
+    char=${rest:i:1}
+    raw+=$char
+    if ((escaped)); then escaped=0
+    elif [[ $char == '\' ]]; then escaped=1
+    elif [[ $char == '"' ]]; then JSON_FIELD=$raw; return
+    fi
+  done
+}
+
+truncate_json_string() {
+  local raw=${1:1:${#1}-2} output='"' char i=0 count=0 step
+  while ((i<${#raw} && count<500)); do
+    char=${raw:i:1}; step=1
+    if [[ $char == '\' ]]; then
+      if [[ ${raw:i+1:1} == u ]]; then step=6; else step=2; fi
+    fi
+    output+=${raw:i:step}
+    ((i+=step, count++))
+  done
+  JSON_VALUE=${output}'"'
+}
+
+message_json=
+thread_json=
+session_json=
+if [[ $adapter == claude ]]; then
+  payload=$(</dev/stdin)
+  json_field_raw session_id; session_json=$JSON_FIELD
+  json_field_raw last_assistant_message
+  [[ $JSON_FIELD == null ]] || { truncate_json_string "$JSON_FIELD"; message_json=$JSON_VALUE; }
+elif [[ $adapter == codex ]]; then
+  json_field_raw type
+  [[ $JSON_FIELD == '"agent-turn-complete"' ]] || exit 0
+  json_field_raw thread-id; thread_json=$JSON_FIELD
+  json_field_raw turn-id; session_json=$JSON_FIELD
+  json_field_raw last-assistant-message
+  [[ $JSON_FIELD == null ]] || { truncate_json_string "$JSON_FIELD"; message_json=$JSON_VALUE; }
+fi
+
+if [[ -z $thread_json ]]; then
+  if [[ -n $thread ]]; then json_quote "$thread"; thread_json=$JSON_VALUE
+  else thread_json=null; fi
+fi
+if [[ -z $session_json ]]; then
+  if [[ -n $session ]]; then json_quote "$session"; session_json=$JSON_VALUE
+  else session_json=null; fi
+fi
+if [[ -z $message_json ]]; then json_quote "$message"; message_json=$JSON_VALUE; fi
+
+cwd=$PWD
+root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || root=$cwd
+project=${root##*/}
+ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+json_quote "$to"; to_json=$JSON_VALUE
+json_quote "$from"; from_json=$JSON_VALUE
+json_quote "$status"; status_json=$JSON_VALUE
+json_quote "$cwd"; cwd_json=$JSON_VALUE
+json_quote "$project"; project_json=$JSON_VALUE
+json_quote "$ts"; ts_json=$JSON_VALUE
+body="{\"to\":$to_json,\"from\":$from_json,\"status\":$status_json,\"thread_id\":$thread_json,\"session_id\":$session_json,\"cwd\":$cwd_json,\"project\":$project_json,\"message\":$message_json,\"ts\":$ts_json}"
+
+header=${GROKBOT_PING_KEY_HEADER:-Authorization}
+[[ $header =~ ^[A-Za-z0-9-]+$ ]] || exit 0
+if [[ $header == Authorization ]]; then
+  auth="Authorization: Bearer $GROKBOT_PING_KEY"
+else
+  auth="$header: $GROKBOT_PING_KEY"
+fi
+
+http_code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --connect-timeout 2 --max-time 5 --request POST \
+  --header 'Content-Type: application/json' --header "$auth" \
+  --data-binary "$body" "$GROKBOT_PING_URL" 2>/dev/null)
+curl_status=$?
+if ((curl_status != 0)) || [[ ! $http_code =~ ^2[0-9][0-9]$ ]]; then
+  log_dir=${XDG_CACHE_HOME:-$HOME/.cache}/grokbot-ping
+  if mkdir -p "$log_dir" 2>/dev/null; then
+    printf '%s target=%s curl_exit=%s http=%s\n' "$ts" "$to" "$curl_status" "$http_code" >> "$log_dir/log" 2>/dev/null || :
+  fi
+fi
+exit 0

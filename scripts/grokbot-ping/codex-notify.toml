@@ -1,0 +1,2 @@
+# Add this root-level line to ~/.codex/config.toml, before any [table].
+notify = ["grokbot-ping", "--from", "codex", "--status", "done", "--codex-notify"]

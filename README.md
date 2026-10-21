@@ -1,10 +1,30 @@
 # Ang skills
 
 - **[grill-me-with-ui](#grill-me-with-ui):** Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me), but you answer each round in a web app with clickable answers, hover-to-dictate and keyboard shortcuts. The optional [grill hub](scripts/grill-hub/) lets you answer from your phone or another computer.
+- **[notify-grokbot](#grokbot-ping):** Send deliberate bot updates when coding work is blocked, needs a decision, or reaches a handoff. Optional hooks ping automatically when a turn finishes.
 
 ## Install
 
 Just ask your agent to install it for you ;)
+
+## grokbot-ping
+
+[`grokbot-ping`](scripts/grokbot-ping/grokbot-ping) sends a small JSON update to a Grok Bot webhook. Get the URL and sender key from the **Grok Bot routine panel**. Put them in a private file outside this repo:
+
+```sh
+mkdir -p ~/.config/grokbot-ping
+cat > ~/.config/grokbot-ping/fabro.env <<'EOF'
+GROKBOT_PING_URL='https://...'
+GROKBOT_PING_KEY='...'
+EOF
+chmod 600 ~/.config/grokbot-ping/fabro.env
+```
+
+Run `bash scripts/grokbot-ping/install.sh` to symlink the sender into `~/.local/bin`; the script only prints agent configuration snippets and does not change those configurations. Ensure `~/.local/bin` is on each agent's `PATH`. The exact snippets are also in [`claude-stop.json`](scripts/grokbot-ping/claude-stop.json), [`codex-notify.toml`](scripts/grokbot-ping/codex-notify.toml), and [`opencode-plugin.js`](scripts/grokbot-ping/opencode-plugin.js). Merge the Claude `Stop` entry into `~/.claude/settings.json`; put the Codex `notify` line at the root of `~/.codex/config.toml`, before any table; copy the OpenCode v1 plugin to `~/.config/opencode/plugins/grokbot-ping.js`. OpenCode is not installed here, so that adapter remains untested.
+
+By default the key is sent as `Authorization: Bearer <key>`. Confirm that the routine expects this header. If it expects a different header name, set `GROKBOT_PING_KEY_HEADER='X-API-Key'` in the env file; the key is then sent as that header's raw value. A missing config or failed POST never breaks an agent turn; failures go to `~/.cache/grokbot-ping/log`. For another bot, create `~/.config/grokbot-ping/<target>.env` and pass `--to <target>`.
+
+The payload includes target, sender, status, T3 thread ID when an explicit `T3_THREAD_ID`, `T3_CODE_THREAD_ID`, or `T3CODE_THREAD_ID` environment variable exists, session ID, working directory, project, message, and timestamp. No T3-specific thread variable was observed in this agent environment. Codex's notify payload supplies its own thread ID and turn ID; those fill `thread_id` and `session_id` respectively. Claude and OpenCode supply their session IDs.
 
 ## grill-me-with-ui
 
