@@ -6,7 +6,7 @@ A small server for the HTML artifacts your agents make: reports, mockups, forms,
 - **Public when you ask.** `--public` also serves it at `/p/<id>/` to anyone with the link, read-only.
 - **Answers come back.** Private artifacts can take input, through plain `<form>`s or the `artifact.js` SDK, and the agent picks it up with `artifact-hub wait`.
 - **They expire.** After 30 days by default, an artifact leaves the gallery and its links stop working. The hub keeps its files for 90 more days, then deletes them.
-- **A gallery** at `/` shows every live artifact, newest first.
+- **A gallery** at `/` shows every live artifact, newest first. Artifacts waiting on you get an ember stripe and tag. The hub's own pages have a light / dark / system toggle, saved per browser; artifacts follow the device's setting.
 
 ## How it works
 

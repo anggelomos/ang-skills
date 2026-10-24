@@ -5,8 +5,8 @@
 (function () {
   const $ = (s) => document.querySelector(s);
   const frame = $("#artifact");
-  const LABEL = { awaiting: "Awaiting your response", responded: "Response sent", working: "Agent working",
-                  view: "Ready to view", done: "Done" };
+  const LABEL = { awaiting: "awaiting your response", responded: "response sent", working: "agent working",
+                  view: "ready to view", done: "done" };
   const random = () => [...crypto.getRandomValues(new Uint8Array(18))].map((b) => b.toString(16).padStart(2, "0")).join("");
   const clientId = random();
   let token = null, port = null, state = null, loadedHtml = null, lastSent = null;
@@ -76,9 +76,9 @@
   }
 
   function paint(s) {
-    document.title = s.title + " · Artifact hub";
+    document.title = s.title + " · artifact-hub";
     $("#title").textContent = s.title;
-    $("#status").textContent = s.expired ? "Expired" : LABEL[s.status] || s.status;
+    $("#status").textContent = s.expired ? "expired" : LABEL[s.status] || s.status;
     $("#status").dataset.status = s.status;
     $("#expiry").textContent = s.expiryText;
     document.body.classList.toggle("is-expired", !!s.expired);

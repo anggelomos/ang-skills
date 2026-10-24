@@ -555,8 +555,8 @@ PUBLIC_CSP = "sandbox allow-scripts; " + ARTIFACT_CSP.format(fonts_css="", fonts
 FRAME_CSP = ("sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; "
              + ARTIFACT_CSP.format(fonts_css=" https://fonts.googleapis.com", fonts=" https://fonts.gstatic.com")
              + "; frame-ancestors 'self'")
-HUB_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-           "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-src 'self'; "
+HUB_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+           "img-src 'self' data:; connect-src 'self'; frame-src 'self'; "
            "form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 
 
@@ -588,7 +588,7 @@ def frame_state(m):
 
 
 STATIC_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".js": "text/javascript; charset=utf-8"}
-STATIC_FILES = {"favicon.svg", "favicon.png", "favicon-cooked.svg", "favicon-cooked.png", "shell.js", "pair.js"}
+STATIC_FILES = {"favicon.svg", "favicon.png", "favicon-cooked.svg", "favicon-cooked.png", "shell.js", "pair.js", "theme.js"}
 NEXT = re.compile(r"/(?:a/[a-z0-9]{20}/)?")
 
 
