@@ -82,7 +82,9 @@
     $("#status").dataset.status = s.status;
     $("#expiry").textContent = s.expiryText;
     document.body.classList.toggle("is-expired", !!s.expired);
-    const icon = s.status === "awaiting" ? "favicon" : "favicon-cooked";
+    const awaiting = s.status === "awaiting";
+    const icon = document.body.dataset.icons === "grill" ? (awaiting ? "favicon" : "favicon-cooked")
+                                                         : (awaiting ? "doc-awaiting" : "doc");
     for (const link of document.querySelectorAll('link[rel="icon"]')) {
       const href = "/static/" + icon + "." + (link.type === "image/svg+xml" ? "svg" : "png");
       if (link.getAttribute("href") !== href) link.setAttribute("href", href);

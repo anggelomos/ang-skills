@@ -110,13 +110,20 @@ p a { color: var(--prompt); }
 """
 
 
-def document(title, css, body, icon="favicon-cooked", head="", scripts=()):
+def icon_for(status, kind="doc"):
+    """Grill sessions keep the campfire (awaiting) and the cooked patty; everything else is a document."""
+    if kind == "grill":
+        return "favicon" if status == "awaiting" else "favicon-cooked"
+    return "doc-awaiting" if status == "awaiting" else "doc"
+
+
+def document(title, css, body, icon="doc", head="", scripts=(), body_attrs=""):
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">{head}<title>{title}</title>'
             '<link rel="icon" type="image/png" sizes="32x32" href="/static/{icon}.png">'
             '<link rel="icon" type="image/svg+xml" sizes="any" href="/static/{icon}.svg">'
-            '<script src="/static/theme.js"></script><style>{css}</style></head><body>{body}{scripts}</body></html>').format(
-        head=head, title=escape(title), icon=icon, css=BASE + css, body=body,
+            '<script src="/static/theme.js"></script><style>{css}</style></head><body{attrs}>{body}{scripts}</body></html>').format(
+        head=head, title=escape(title), icon=icon, css=BASE + css, body=body, attrs=body_attrs,
         scripts="".join('<script src="/static/{}"></script>'.format(s) for s in scripts))
 
 
@@ -133,9 +140,9 @@ def gallery_html(cards):
         body = '<ul class="grid">{}</ul>'.format("".join(card(m) for m in cards))
     else:
         body = '<p class="empty">Nothing here yet. Artifacts your agents publish show up here, newest first.</p>'
-    # the gallery refreshes on its own; the favicon is the campfire while anything waits on you
+    # the gallery refreshes on its own; the favicon gets the ember badge while anything waits on you
     return document("artifact-hub", GALLERY, '<main><header><h1>artifact-hub</h1>{}</header>{}</main>'.format(THEME.format(cls=""), body),
-                    icon="favicon" if waiting else "favicon-cooked", head='<meta http-equiv="refresh" content="15">')
+                    icon=icon_for("awaiting" if waiting else "view"), head='<meta http-equiv="refresh" content="15">')
 
 
 def shell_html(m, label, expiry):
@@ -146,8 +153,9 @@ def shell_html(m, label, expiry):
             '<div id="toast" class="toast" role="status" aria-live="polite"></div>').format(
         title=escape(m["title"]), status=escape(m["status"]), label=escape(label.lower()), expiry=escape(expiry),
         theme=THEME.format(cls=""))
-    return document(m["title"] + " · artifact-hub", SHELL, body,
-                    icon="favicon" if m["status"] == "awaiting" else "favicon-cooked", scripts=["shell.js"])
+    kind = "grill" if m["type"] == "grill" else "doc"
+    return document(m["title"] + " · artifact-hub", SHELL, body, icon=icon_for(m["status"], kind), scripts=["shell.js"],
+                    body_attrs=' data-icons="{}"'.format(kind))
 
 
 def pair_html(nxt, error=""):

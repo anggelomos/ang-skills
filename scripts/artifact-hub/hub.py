@@ -588,7 +588,8 @@ def frame_state(m):
 
 
 STATIC_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".js": "text/javascript; charset=utf-8"}
-STATIC_FILES = {"favicon.svg", "favicon.png", "favicon-cooked.svg", "favicon-cooked.png", "shell.js", "pair.js", "theme.js"}
+STATIC_FILES = {"favicon.svg", "favicon.png", "favicon-cooked.svg", "favicon-cooked.png", "doc.svg", "doc.png",
+                "doc-awaiting.svg", "doc-awaiting.png", "shell.js", "pair.js", "theme.js"}
 NEXT = re.compile(r"/(?:a/[a-z0-9]{20}/)?")
 
 
@@ -649,7 +650,7 @@ class PublicHandler(Quiet):
             name = path[8:]
             return reply(self, 200, (STATIC / name).read_bytes(), STATIC_TYPES[Path(name).suffix])
         if path in ("/favicon.ico", "/favicon.svg"):
-            return reply(self, 200, (STATIC / "favicon-cooked.svg").read_bytes(), "image/svg+xml")
+            return reply(self, 200, (STATIC / "doc.svg").read_bytes(), "image/svg+xml")
         if path.startswith("/p/"):
             return self.public_artifact(path)
         if path == "/pair":
