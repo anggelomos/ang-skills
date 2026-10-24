@@ -117,9 +117,11 @@ def icon_for(status, kind="doc"):
     return "doc-awaiting" if status == "awaiting" else "doc"
 
 
+# resizes-content: a phone keyboard shrinks the page, and with it an artifact's frame, so the artifact can keep
+# things like a Done button above the keyboard. A frame's own viewport meta does nothing; only this page's counts
 def document(title, css, body, icon="doc", head="", scripts=(), body_attrs=""):
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1">{head}<title>{title}</title>'
+            '<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">{head}<title>{title}</title>'
             '<link rel="icon" type="image/png" sizes="32x32" href="/static/{icon}.png">'
             '<link rel="icon" type="image/svg+xml" sizes="any" href="/static/{icon}.svg">'
             '<script src="/static/theme.js"></script><style>{css}</style></head><body{attrs}>{body}{scripts}</body></html>').format(
