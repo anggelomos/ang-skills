@@ -200,6 +200,7 @@ document.addEventListener("visibilitychange", () => document.visibilityState ===
 async function submitRound(answers) {
   Object.values(timers).forEach(clearTimeout);
   document.body.classList.add("is-submitted");
+  setNote(sentNote(shown.round));
   api.close();
   // the note sits after the last question, so scroll down to it
   glide(root.scrollHeight);
@@ -215,6 +216,7 @@ async function submitRound(answers) {
 function setNote(html) {
   $("#note").innerHTML = html;
 }
+const sentNote = (round) => `Round ${round} sent. Round ${round + 1} shows up here as soon as it's ready.`;
 const loader = '<span class="loader" aria-hidden="true"><i></i><i></i><i></i></span>';
 
 function apply(s) {
@@ -238,7 +240,7 @@ function apply(s) {
   $("#finished-detail").textContent = `The grill's off · ${s.round} round${s.round === 1 ? "" : "s"} cooked`;
   if (finished) setNote("Session finished. You can close this tab.");
   else if (empty) setNote(`The agent is preparing the first round ${loader}`);
-  else if (sent) setNote(`Round ${s.round} sent. Round ${s.round + 1} shows up here as soon as it's ready.`);
+  else if (sent) setNote(sentNote(s.round));
   shown = { round: s.round, status: s.status };
 }
 
@@ -338,9 +340,6 @@ function fromHub(st) {
   if (hubDraft.round !== d.round) hubDraft = { round: d.round, answers: { ...draft } };
   return { ...d, status, questions: d.questions.map((q) => ({ ...q, answer: q.answer || byId[q.id] || draft[q.id] || null })) };
 }
-
-if (onHub) Artifact.onUpdate((st) => apply(fromHub(st)));
-else connect();
 
 // ---------- phones: swipe snapping, fixed tiles, typing mode ----------
 
@@ -483,3 +482,8 @@ function setupCards() {
     }
   });
 }
+
+// last, once everything above is defined: on the hub the state can already be there, and then
+// onUpdate runs apply (and mountRound, which needs fitBar and setupCards) before it returns
+if (onHub) Artifact.onUpdate((st) => apply(fromHub(st)));
+else connect();

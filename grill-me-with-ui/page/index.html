@@ -104,7 +104,8 @@
   .skewer .ring { position: absolute; top: -6px; left: 50%; margin-left: -12px; width: 24px; height: 24px; border: 5px solid var(--steel); }
   .chunk { position: relative; background: none; border: 0; padding: 0; cursor: pointer; line-height: 0; }
   .chunk svg, .chunk img { display: block; }
-  .chunk .cooked { position: absolute; inset: 0; opacity: 0; }
+  /* fills its chunk, which shrinks on phones: the img's own 32px would spill over its neighbors */
+  .chunk .cooked { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
   .chunk.is-done .cooked { opacity: 1; }
   .chunk.is-here { outline: 3px solid var(--ember); outline-offset: 4px; }
   .chunk:focus-visible { outline: 3px dashed var(--ink); outline-offset: 4px; }
@@ -198,6 +199,7 @@
     display: block; width: fit-content; margin: 0 auto; padding: 12px 18px; text-align: center; background: var(--ember-soft); color: var(--ember-ink); font-weight: 500;
     box-shadow: inset 3px 0 0 var(--ember);
   }
+  body .sent:empty { display: none; } /* never an empty box, whatever the state */
   .btn-hot .when-sent, body.is-submitted .btn-hot .when-open { display: none; }
   body.is-submitted .btn-hot .when-sent { display: inline-flex; align-items: center; gap: 10px; }
   body.is-submitted .btn-hot[data-action="done"] { pointer-events: none; }
