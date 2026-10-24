@@ -311,7 +311,7 @@ paint();
 
 
 def page(title, body, refresh=False, script="", ready=False):
-    icon = "favicon" if ready else "favicon-burger"
+    icon = "favicon" if ready else "favicon-cooked"
     meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">{}<title>{} · Grill hub</title>'
@@ -392,7 +392,7 @@ class PublicHandler(grill.Handler):
         url = urlsplit(self.path)
         path = url.path
         # Shared branding is public, including on the pairing page.
-        if path in ("/favicon.svg", "/favicon.png", "/favicon-burger.svg", "/favicon-burger.png") and self.command == "GET":
+        if path in ("/favicon.svg", "/favicon.png", "/favicon-cooked.svg", "/favicon-cooked.png") and self.command == "GET":
             ctype = "image/svg+xml" if path.endswith(".svg") else "image/png"
             reply(self, 200, (grill.PAGE_DIR / path[1:]).read_bytes(), ctype)
             return None

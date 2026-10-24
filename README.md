@@ -50,7 +50,7 @@ Each answer is saved as a draft the moment you give it, so reloading the page, c
 
 Copy the `grill-me-with-ui` folder into your agent's skills folder, for example `~/.claude/skills/grill-me-with-ui/` for Claude Code, then run `/grill-me-with-ui`. You need Python 3.8 or newer. Nothing else needs installing.
 
-Session tabs show the Classic Ember pixel campfire when a round needs your answers, and a cooked burger while the agent prepares a round or after the session finishes. The hub dashboard shows the campfire whenever any session needs answers; otherwise it shows the burger. The dashboard updates on its existing 15-second refresh. SVGs and 32 px PNG fallbacks live in `grill-me-with-ui/page/`, with no extra dependencies.
+Session tabs show the Classic Ember pixel campfire when a round needs your answers, and a cooked meat patty while the agent prepares a round or after the session finishes. The hub dashboard shows the campfire whenever any session needs answers; otherwise it shows the cooked patty. The dashboard updates on its existing 15-second refresh. SVGs and 32 px PNG fallbacks live in `grill-me-with-ui/page/`, with no extra dependencies.
 
 ### How it works
 
