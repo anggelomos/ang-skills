@@ -50,6 +50,8 @@ Each answer is saved as a draft the moment you give it, so reloading the page, c
 
 Copy the `grill-me-with-ui` folder into your agent's skills folder, for example `~/.claude/skills/grill-me-with-ui/` for Claude Code, then run `/grill-me-with-ui`. You need Python 3.8 or newer. Nothing else needs installing.
 
+Session tabs and the hub share the Classic Ember pixel campfire favicon. Its SVG and 32 px PNG fallback live in `grill-me-with-ui/page/`; both are bundled, with no extra dependencies.
+
 ### How it works
 
 `grill.py` is the CLI the agent runs and the local server the page talks to, in one file. They meet in `.grill/` inside your project:

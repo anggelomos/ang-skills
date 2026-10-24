@@ -700,8 +700,11 @@ class Handler(BaseHTTPRequestHandler):
         body = f.read_bytes()
         if name == "index.html":
             body = body.replace(b"{{theme}}", srv.config["theme"].encode())
-        types = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
-        self.send(200, body, types.get(f.suffix, "application/octet-stream") + "; charset=utf-8")
+        types = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png"}
+        ctype = types.get(f.suffix, "application/octet-stream")
+        if f.suffix in (".html", ".js", ".css", ".svg"):
+            ctype += "; charset=utf-8"
+        self.send(200, body, ctype)
 
     def do_POST(self):
         srv, path = self.server, self.route()

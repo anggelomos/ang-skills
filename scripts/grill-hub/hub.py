@@ -314,6 +314,8 @@ def page(title, body, refresh=False, script=""):
     meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">{}<title>{} · Grill hub</title>'
+            '<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">'
+            '<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">'
             '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;600&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">'
             '<style>{}</style></head><body>{}{}</body></html>').format(
@@ -387,6 +389,11 @@ class PublicHandler(grill.Handler):
     def route(self):
         url = urlsplit(self.path)
         path = url.path
+        # Shared branding is public, including on the pairing page.
+        if path in ("/favicon.svg", "/favicon.png") and self.command == "GET":
+            ctype = "image/svg+xml" if path.endswith(".svg") else "image/png"
+            reply(self, 200, (grill.PAGE_DIR / path[1:]).read_bytes(), ctype)
+            return None
         if path == "/pair":
             if self.command == "POST":
                 self.pair()
