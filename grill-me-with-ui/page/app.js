@@ -15,15 +15,7 @@ const raw = pixelSprite(`
   pppppppp
   PPPPPPPP
   .PPPPPP.`, { p: "#f3b2a4", P: "#e3958a" }, { scale: 4 });
-const cooked = pixelSprite(`
-  .pppppp.
-  pppppppp
-  PPPPPPPP
-  pppppppp
-  pppppppp
-  PPPPPPPP
-  pppppppp
-  .pppppp.`, { p: "#a75a30", P: "#6e3517" }, { scale: 4, className: "cooked" });
+const cooked = '<img src="favicon-cooked.svg" width="32" height="32" class="cooked" alt="" aria-hidden="true">';
 const arrow = pixelSprite(`
   ..f...
   ..ff..
