@@ -95,7 +95,7 @@
     if (s.expired) {
       frame.removeAttribute("src");
       if (port) port.close();
-      port = token = null;
+      port = token = loadedHtml = null; // brought back with a new expiry: load it again
       return;
     }
     if (s.htmlVersion !== loadedHtml) return load();

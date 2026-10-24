@@ -150,7 +150,10 @@ def load_meta(aid):
     if not isinstance(aid, str) or not ID.fullmatch(aid):
         return None
     m = read_optional(adir(aid) / "meta.json")
-    return m if isinstance(m, dict) and m.get("id") == aid else None
+    if not (isinstance(m, dict) and m.get("id") == aid and m.get("status") in STATUSES
+            and all(isinstance(m.get(k), str) for k in ("title", "project", "type", "createdAt"))):
+        return None  # missing or hand-edited into something the hub can't show
+    return m
 
 
 def all_metas():
