@@ -1,0 +1,16 @@
+services:
+  artifact-hub:
+    build: .
+    container_name: artifact-hub
+    restart: unless-stopped
+    environment:
+      # where browsers reach the public port, e.g. https://artifacts.example.com. Set it in .env
+      ARTIFACT_HUB_PUBLIC_URL: ${ARTIFACT_HUB_PUBLIC_URL:-http://localhost:7172}
+    ports:
+      - "127.0.0.1:7172:7172"  # public: point your tunnel or reverse proxy here
+      - "127.0.0.1:7173:7173"  # agent: the artifact-hub CLI and grill.py only. Never expose it
+    volumes:
+      - artifact-hub-data:/data
+
+volumes:
+  artifact-hub-data:

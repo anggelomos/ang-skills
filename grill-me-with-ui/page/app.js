@@ -109,10 +109,26 @@ function showAlert(text, { sticky = false } = {}) {
 }
 const hideAlert = () => alertBox.classList.remove("is-on");
 
+// On artifact-hub the page runs in a sandboxed frame with no network, and artifact.js (the hub's SDK) carries
+// drafts and submits instead: a draft is the whole round's answers so far, a submit is the round's answers
+const onHub = !!(window.Artifact && window.Artifact.hub);
+let hubDraft = { round: 0, answers: {} };
+
+async function hubPost(url, data) {
+  if (url === "api/submit") return Artifact.submit({ round: data.round, answers: data.answers });
+  if (hubDraft.round !== data.round) hubDraft = { round: data.round, answers: {} };
+  hubDraft.answers[data.id] = { choice: data.choice, text: data.text };
+  return Artifact.save(hubDraft);
+}
+
 // returns the HTTP status, or 0 if the server couldn't be reached
 async function post(url, data, { keepalive = false } = {}) {
   let status = 0;
   try {
+    if (onHub) {
+      await hubPost(url, data);
+      return 200;
+    }
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data), keepalive });
     status = r.status;
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
@@ -131,19 +147,25 @@ let sessionId = null;
 // The server keeps each answer as a draft until the round is submitted. Answers it hasn't confirmed yet
 // also wait in localStorage, so closing or reloading the page, or a dropped connection, doesn't lose them:
 // the next load puts them back and sends them again
+// (in memory where there's no localStorage, like artifact-hub's sandboxed frame)
 const draftKey = (round) => `grill-unsaved:${sessionId}:${round}`;
+const memory = {};
 function unsaved(round) {
   try {
     return JSON.parse(localStorage.getItem(draftKey(round))) || {};
   } catch (e) {
-    return {};
+    return memory[draftKey(round)] || {};
   }
 }
 function setUnsaved(round, answers) {
   try {
     if (Object.keys(answers).length) localStorage.setItem(draftKey(round), JSON.stringify(answers));
     else localStorage.removeItem(draftKey(round));
-  } catch (e) {} // no storage (private mode, full): the server's copy still works
+  } catch (e) {
+    // no storage (private mode, full, sandboxed): the server's copy still works
+    if (Object.keys(answers).length) memory[draftKey(round)] = answers;
+    else delete memory[draftKey(round)];
+  }
 }
 
 // a pick saves right away; typing saves once you pause
@@ -303,7 +325,22 @@ function connect() {
     if (events.readyState === EventSource.CLOSED) setTimeout(connect, 3000);
   };
 }
-connect();
+
+// artifact-hub's version of the same state: grill.py keeps the session in the artifact's data, and the user's
+// drafts and submit live next to it. A submit makes it the agent's turn right away, like the local server does
+function fromHub(st) {
+  const d = st.data || { id: null, title: st.title, status: AGENT, round: 0, questions: [] };
+  const status = st.status === "done" ? FINISHED : st.status === "responded" ? AGENT : d.status;
+  const r = st.response && st.response.value;
+  const sent = r && r.round === d.round && Array.isArray(r.answers) ? r.answers : null;
+  const byId = sent ? Object.fromEntries(sent.map((a) => [a.id, { choice: a.choice, text: a.text }])) : {};
+  const draft = st.draft && st.draft.round === d.round ? st.draft.answers || {} : {};
+  if (hubDraft.round !== d.round) hubDraft = { round: d.round, answers: { ...draft } };
+  return { ...d, status, questions: d.questions.map((q) => ({ ...q, answer: q.answer || byId[q.id] || draft[q.id] || null })) };
+}
+
+if (onHub) Artifact.onUpdate((st) => apply(fromHub(st)));
+else connect();
 
 // ---------- phones: swipe snapping, fixed tiles, typing mode ----------
 

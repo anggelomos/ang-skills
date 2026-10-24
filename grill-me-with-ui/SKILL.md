@@ -8,22 +8,24 @@ Call the Skill tool with "grilling" and run the session exactly as it says, with
 
 Everything below replaces only the "Format a round like so" part and the "wait for the user's answers" part of grilling. The frontier, the sub-agents and the stop rule stay the same.
 
+When an artifact hub is running, the session is an artifact on it, of type `grill`. Call the Skill tool with "generate-artifact" for how the hub works: private links, pairing, expiry, and why you never end your turn while waiting. If the Skill tool can't find it, carry on without it. Don't use its `artifact-hub` CLI for the session: `grill.py` publishes, updates and waits on the artifact itself, and keeps `.grill/` in step.
+
 ## Commands
 
 Run them from the project's root folder. `<skill-dir>` is the folder this file is in. Use `python` instead of `python3` on Windows.
 
 | Command | What it does |
 |---|---|
-| `python3 <skill-dir>/grill.py start --title "<title>" [--local]` | Starts the session and its server, and opens the page. If a grill hub is running, the session uses it unless you pass `--local`. |
+| `python3 <skill-dir>/grill.py start --title "<title>" [--local]` | Starts the session and opens the page. If an artifact hub is running, the session is an artifact there unless you pass `--local`; otherwise it gets a local server. |
 | `python3 <skill-dir>/grill.py round <path>` | Sends the round in the JSON file at `<path>`. |
 | `python3 <skill-dir>/grill.py wait [--timeout <seconds>]` | Waits until the user submits the round, then prints their answers. |
-| `python3 <skill-dir>/grill.py finish` | Ends the session and stops the server. |
+| `python3 <skill-dir>/grill.py finish` | Ends the session, and marks its artifact done or stops its local server. |
 | `python3 <skill-dir>/grill.py status` | Shows the session, its URL and what to do next. |
-| `python3 <skill-dir>/grill.py connect` | Prints a one-time code that pairs a browser with the grill hub. |
+| `python3 <skill-dir>/grill.py connect` | Prints a one-time code that pairs a browser with the hub. |
 
 ## The loop
 
-1. **Start.** Run `start` with a short title for what's being grilled. Tell the user the URL it prints, in one line. Pass `--local` only if the user asks for a local session. If `start` says no browser is paired with the hub, run `connect` and give the user the code and link it prints. Do the same whenever the user asks to pair a device.
+1. **Start.** Run `start` with a short title for what's being grilled. Tell the user the URL it prints, in one line. Pass `--local` only if the user asks for a local session. A hub session is private: never make it public. If `start` says no browser is paired with the hub, run `connect` and give the user the code and link it prints. Do the same whenever the user asks to pair a device.
 2. **Send a round.** Instead of printing the round in the chat, write it to a JSON file, for example `.grill/next-round.json`:
    ```json
    {

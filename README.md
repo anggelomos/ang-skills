@@ -1,6 +1,7 @@
 # Ang skills
 
-- **[grill-me-with-ui](#grill-me-with-ui):** Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me), but you answer each round in a web app with clickable answers, hover-to-dictate and keyboard shortcuts. The optional [grill hub](scripts/grill-hub/) lets you answer from your phone or another computer.
+- **[grill-me-with-ui](#grill-me-with-ui):** Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me), but you answer each round in a web app with clickable answers, hover-to-dictate and keyboard shortcuts. With the optional [artifact hub](scripts/artifact-hub/), you can answer from your phone or another computer.
+- **[generate-artifact](#generate-artifact):** Agents build a self-contained HTML artifact (a report, a mockup, a form) and publish it to your [artifact hub](scripts/artifact-hub/): private to your paired devices unless you ask for a public link. Forms and the `artifact.js` SDK send your answers back to the agent.
 - **[notify-grokbot](#grokbot-ping):** Send bot updates only from coding sessions that explicitly opt in. Hooks ping when an enabled session finishes a turn.
 
 ## Install
@@ -32,6 +33,24 @@ Enable markers are stored under `~/.local/state/grokbot-ping/` (or `$XDG_STATE_H
 
 The payload includes target, sender, status, T3 thread ID when an explicit `T3_THREAD_ID`, `T3_CODE_THREAD_ID`, or `T3CODE_THREAD_ID` environment variable exists, session ID, working directory, project, message, and timestamp. No T3-specific thread variable was observed in this agent environment. Codex's notify payload supplies its own thread ID and turn ID; those fill `thread_id` and `session_id` respectively. Claude and OpenCode supply their session IDs.
 
+## generate-artifact
+
+[`/generate-artifact`](generate-artifact/SKILL.md) teaches agents to build an artifact as one HTML file and publish it with the [`artifact-hub`](generate-artifact/artifact-hub) CLI, which talks to the [artifact hub](scripts/artifact-hub/) running on the same machine:
+
+| Command | What it does |
+|---|---|
+| `artifact-hub publish <file.html> --title "…" [--public] [--expires 30d\|never\|<n>d]` | Publishes and prints the link. Private unless you ask for `--public`. |
+| `artifact-hub update <id> [<file.html>] [--data <file.json>]` | Overwrites it. Only the latest version is kept. |
+| `artifact-hub wait <id> [--timeout <s>]` | Waits until you submit, then prints your response as JSON. |
+| `artifact-hub list`, `show <id>`, `delete <id>` | Lists, inspects, deletes. |
+| `artifact-hub connect` | Prints a one-time code that pairs a browser with the hub. |
+
+Private artifacts can take input: plain `<form>`s work as they are, and `artifact.js` gives pages `save`, `submit` and `onUpdate`. The agent hears about it only through `wait`. Artifacts expire after 30 days by default: they leave the gallery and their links stop working, and the hub deletes them 90 days later. See the [hub's README](scripts/artifact-hub/README.md) for how it's run and sandboxed.
+
+### Install
+
+Copy the `generate-artifact` folder into your agent's skills folder, for example `~/.claude/skills/generate-artifact/`. The CLI is the `artifact-hub` file in it; to run it from anywhere, symlink it into `~/.local/bin`. It needs Python 3.8 or newer and a running [artifact hub](scripts/artifact-hub/).
+
 ## grill-me-with-ui
 
 [Grill Me](https://github.com/mattpocock/skills), answered in a browser page instead of the chat.
@@ -50,7 +69,7 @@ Each answer is saved as a draft the moment you give it, so reloading the page, c
 
 Copy the `grill-me-with-ui` folder into your agent's skills folder, for example `~/.claude/skills/grill-me-with-ui/` for Claude Code, then run `/grill-me-with-ui`. You need Python 3.8 or newer. Nothing else needs installing.
 
-Session tabs show the Classic Ember pixel campfire when a round needs your answers, and a cooked meat patty while the agent prepares a round or after the session finishes. The hub dashboard shows the campfire whenever any session needs answers; otherwise it shows the cooked patty. The dashboard updates on its existing 15-second refresh. The cooked patty SVG is also the sprite displayed in the app’s progress rail. SVGs and 32 px PNG fallbacks live in `grill-me-with-ui/page/`, with no extra dependencies.
+Session tabs show the Classic Ember pixel campfire when a round needs your answers, and a cooked meat patty while the agent prepares a round or after the session finishes. The artifact hub's gallery shows the campfire whenever any artifact is waiting on you; otherwise it shows the cooked patty. It refreshes every 15 seconds. The cooked patty SVG is also the sprite displayed in the app’s progress rail. SVGs and 32 px PNG fallbacks live in `grill-me-with-ui/page/`, with no extra dependencies.
 
 ### How it works
 
@@ -58,7 +77,7 @@ Session tabs show the Classic Ember pixel campfire when a round needs your answe
 
 ```
 .grill/
-  config.json              { "theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "hubUrl": "http://127.0.0.1:7171" }
+  config.json              { "theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "artifactHubUrl": "http://127.0.0.1:7173" }
   sessions/<uuid>/
     session.json           title, status, server port
     round-1.json           the round's questions and your answers
@@ -73,13 +92,15 @@ Session tabs show the Classic Ember pixel campfire when a round needs your answe
 | `grill.py wait [--timeout <s>]` | Waits until you submit, then prints `Q1: <answer>` lines. With `--timeout`, it gives up cleanly so the agent can run it again. |
 | `grill.py finish` | Ends the session and stops the server. |
 | `grill.py status` | Shows the session, its URL and what to do next. |
-| `grill.py connect` | Prints a one-time code that pairs a browser with the grill hub. |
+| `grill.py connect` | Prints a one-time code that pairs a browser with the hub. |
 
 `.grill/` contains its own `.gitignore`, so session files never end up in your repo. In `config.json`, `theme` can be `system`, `light` or `dark`.
 
 ### Answering from another device
 
-The optional [grill hub](scripts/grill-hub/) is a small Docker container that serves your sessions outside localhost, for example through a Cloudflare tunnel. It has a dashboard of your active sessions and pairs devices with a one-time code. When the hub is running, `start` uses it automatically. Use `start --local` or `"useHub": false` in `config.json` to opt out.
+When the [artifact hub](scripts/artifact-hub/) is running, `start` publishes the session there as a private artifact of type `grill`, so you can answer from any paired device, for example through a Cloudflare tunnel. It shows up in the hub's gallery, and like any artifact it expires after 30 days. `grill.py` keeps `.grill/` as its source of truth: each round goes into the artifact's data, and `wait` copies your drafts and answers back. If the hub goes down mid-session, `wait` retries for 5 minutes, then says how to continue; a hub session never falls back to a local server. Use `start --local` or `"useHub": false` in `config.json` to opt out, and `"artifactHubUrl"` if the hub's agent port isn't at `http://127.0.0.1:7173`.
+
+Sessions started on the older grill hub keep using it, at `"hubUrl"` (default `http://127.0.0.1:7171`), until they're finished.
 
 ### Credits
 

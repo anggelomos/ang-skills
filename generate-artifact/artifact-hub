@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""artifact-hub: publish HTML artifacts to the artifact hub and collect what the user sends back.
+
+  artifact-hub publish <file.html> --title "..." [--project P] [--type T] [--data F] [--public] [--expires 30d|never|<n>d] [--status S]
+  artifact-hub update <id> [<file.html>] [--data F] [--title T] [--public | --private] [--expires ...] [--status S]
+  artifact-hub wait <id> [--timeout SECONDS]
+  artifact-hub show <id>
+  artifact-hub list [--all] [--json]
+  artifact-hub delete <id>
+  artifact-hub connect
+
+It talks to the hub's agent port, ARTIFACT_HUB_URL (default http://127.0.0.1:7173). Python 3.8+, standard library only.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HUB_URL = os.environ.get("ARTIFACT_HUB_URL", "http://127.0.0.1:7173").rstrip("/")
+STATUSES = ("awaiting", "responded", "working", "view", "done")
+HUB_RETRY_SECONDS = 300
+# the hub is on this machine: skip any HTTP proxy from the environment
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class CliError(Exception):
+    pass
+
+
+class HubDown(CliError):
+    pass
+
+
+def call(method, path, body=None, timeout=10):
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(HUB_URL + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with LOCAL.open(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode("utf-8")).get("error")
+        except ValueError:
+            msg = None
+        raise CliError("the hub answered {}: {}".format(e.code, msg or e.reason))
+    except (OSError, ValueError) as e:
+        raise HubDown("the artifact hub at {} isn't answering ({}). Is it running? See scripts/artifact-hub "
+                      "in the ang-skills repo.".format(HUB_URL, e))
+
+
+def read_html(path):
+    p = Path(path)
+    if not p.is_file():
+        raise CliError("{} doesn't exist".format(path))
+    try:
+        return p.read_bytes().decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise CliError("{} isn't UTF-8 ({}). Save it as UTF-8 and try again.".format(path, e))
+
+
+def read_data(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except OSError as e:
+        raise CliError("can't read {}: {}".format(path, e))
+    except ValueError as e:
+        raise CliError("{} isn't valid JSON: {}".format(path, e))
+
+
+def project_name():
+    """The git remote's repo name, or the folder name, as a URL-friendly slug."""
+    name = Path.cwd().name
+    try:
+        url = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True, timeout=3).stdout.strip()
+        if url:
+            name = re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:80].strip("-") or "project"
+
+
+def slug(value):
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:80].strip("-")
+
+
+def describe(a, verb):
+    lines = ["{}: {}".format(verb, a["title"]), "  ID:      {}".format(a["id"]),
+             "  URL:     {}  (paired browsers only)".format(a["url"])]
+    if a.get("publicUrl"):
+        lines.append("  Public:  {}  (anyone with the link)".format(a["publicUrl"]))
+    lines.append("  Status:  {}".format(a["status"]))
+    lines.append("  Expiry:  {}{}".format(a["expiryText"], " ({})".format(a["expiresAt"][:10]) if a.get("expiresAt") else ""))
+    if a["status"] == "awaiting":
+        lines.append("\nNext: give the user the URL, then run this and don't end your turn until it prints the response:\n"
+                     "  artifact-hub wait {}".format(a["id"]))
+    return "\n".join(lines)
+
+
+def cmd_publish(args):
+    body = {"title": args.title, "project": slug(args.project) if args.project else project_name(),
+            "type": slug(args.type) or "page", "html": read_html(args.file), "public": args.public}
+    if args.data:
+        body["data"] = read_data(args.data)
+    if args.expires:
+        body["expires"] = args.expires
+    if args.status:
+        body["status"] = args.status
+    print(describe(call("POST", "/api/artifacts", body), "Published"))
+
+
+def cmd_update(args):
+    body = {}
+    if args.file:
+        body["html"] = read_html(args.file)
+    if args.data:
+        body["data"] = read_data(args.data)
+    if args.title:
+        body["title"] = args.title
+    if args.public:
+        body["public"] = True
+    if args.private:
+        body["public"] = False
+    if args.expires:
+        body["expires"] = args.expires
+    if args.status:
+        body["status"] = args.status
+    if not body:
+        raise CliError("nothing to update. Pass a file, --data, --title, --public/--private, --expires or --status.")
+    print(describe(call("PATCH", "/api/artifacts/" + args.id, body), "Updated"))
+
+
+def print_json(value):
+    print(json.dumps(value, indent=2, ensure_ascii=False))
+
+
+def cmd_wait(args):
+    deadline = time.time() + args.timeout if args.timeout else None
+    down_since, warned = None, False
+    while True:
+        seconds = 25 if not deadline else max(0, min(25, int(deadline - time.time())))
+        try:
+            a = call("GET", "/api/artifacts/{}/wait?timeout={}".format(args.id, seconds), timeout=seconds + 15)
+        except HubDown as e:
+            down_since = down_since or time.time()
+            if time.time() - down_since > HUB_RETRY_SECONDS:
+                raise
+            if not warned:
+                print("{}. Retrying for up to {} minutes.".format(e, HUB_RETRY_SECONDS // 60), file=sys.stderr, flush=True)
+                warned = True
+            time.sleep(3)
+            continue
+        down_since = None
+        if a.get("expired"):
+            raise CliError("the artifact expired, so there's nothing to wait for. Bring it back with "
+                           "`artifact-hub update {} --expires 30d`.".format(args.id))
+        if a["status"] == "responded":
+            print_json(a["response"])
+            return 0
+        if a["status"] == "done":
+            raise CliError("the artifact is done, so it isn't waiting for a response")
+        if a["status"] in ("view", "working"):
+            raise CliError("the artifact's status is '{}', so the user can't respond. Ask for a response with "
+                           "`artifact-hub update {} --status awaiting`.".format(a["status"], args.id))
+        if deadline and time.time() >= deadline:
+            print("Still waiting: the user hasn't responded yet. This is normal.\n\n"
+                  "Run the same command again now, and don't end your turn:\n"
+                  "  artifact-hub wait {} --timeout {}".format(args.id, args.timeout))
+            return 2
+
+
+def cmd_show(args):
+    print_json(call("GET", "/api/artifacts/" + args.id))
+
+
+def cmd_list(args):
+    items = call("GET", "/api/artifacts" + ("?all=1" if args.all else ""))["artifacts"]
+    if args.json:
+        return print_json(items)
+    if not items:
+        print("No artifacts{}.".format("" if args.all else " (expired ones are hidden; --all shows them)"))
+        return
+    for a in items:
+        print("{}  {:<10} {:<20} {}\n{}  {} · {} · {}{}".format(
+            a["id"], a["status"], a["project"][:20], a["title"], " " * 20, a["type"], a["expiryText"], a["url"],
+            " · public: " + a["publicUrl"] if a.get("publicUrl") else ""))
+
+
+def cmd_delete(args):
+    call("DELETE", "/api/artifacts/" + args.id)
+    print("Deleted {}".format(args.id))
+
+
+def cmd_connect(args):
+    info = call("POST", "/api/pair-codes", {})
+    print("Pairing code: {}\n  Open {} on the device and enter it. It works once and expires in {} minutes.\n\n"
+          "Show the user this code and link.".format(info["code"], info["pairUrl"], info["expiresInMinutes"]))
+
+
+def main():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+    p = argparse.ArgumentParser(prog="artifact-hub", description="Publish HTML artifacts and collect the user's responses.")
+    sub = p.add_subparsers(dest="command", metavar="command")
+    status_help = "awaiting (the user's turn, default for private), working, view (default for public), done"
+
+    sp = sub.add_parser("publish", help="publish an HTML file; prints its ID and link")
+    sp.add_argument("file")
+    sp.add_argument("--title", required=True)
+    sp.add_argument("--project", help="defaults to the git remote's repo name, or the folder name")
+    sp.add_argument("--type", default="page", help="a short kind, like report, form, mockup or grill")
+    sp.add_argument("--data", metavar="FILE", help="a JSON file the page gets as state.data (Artifact.ready, Artifact.onUpdate)")
+    sp.add_argument("--public", action="store_true", help="also publish it at a public link. Only when the user asks")
+    sp.add_argument("--expires", metavar="30d|never|<n>d", help="default 30d")
+    sp.add_argument("--status", choices=STATUSES, help=status_help)
+
+    sp = sub.add_parser("update", help="overwrite an artifact's HTML, data or settings")
+    sp.add_argument("id")
+    sp.add_argument("file", nargs="?")
+    sp.add_argument("--data", metavar="FILE")
+    sp.add_argument("--title")
+    vis = sp.add_mutually_exclusive_group()
+    vis.add_argument("--public", action="store_true")
+    vis.add_argument("--private", action="store_true")
+    sp.add_argument("--expires", metavar="30d|never|<n>d")
+    sp.add_argument("--status", choices=STATUSES, help=status_help)
+
+    sp = sub.add_parser("wait", help="block until the user responds, then print the response as JSON")
+    sp.add_argument("id")
+    sp.add_argument("--timeout", type=int, metavar="SECONDS",
+                    help="give up after this many seconds (exit code 2); set it below your shell tool's time limit")
+
+    sp = sub.add_parser("show", help="print everything about an artifact as JSON, including drafts")
+    sp.add_argument("id")
+    sp = sub.add_parser("list", help="list artifacts, newest first")
+    sp.add_argument("--all", action="store_true", help="include expired ones")
+    sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("delete", help="delete an artifact now")
+    sp.add_argument("id")
+    sub.add_parser("connect", help="print a one-time code that pairs a browser with the hub")
+
+    args = p.parse_args()
+    commands = {"publish": cmd_publish, "update": cmd_update, "wait": cmd_wait, "show": cmd_show,
+                "list": cmd_list, "delete": cmd_delete, "connect": cmd_connect}
+    if not args.command:
+        p.print_help()
+        return 1
+    try:
+        return commands[args.command](args) or 0
+    except CliError as e:
+        print("error: {}".format(e), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

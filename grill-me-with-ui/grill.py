@@ -3,8 +3,8 @@
 
 Both meet in .grill/ in the folder the agent works in:
 
-  .grill/config.json                  {"theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "hubUrl": "..."}
-  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}, hub: {url, page}, openRound}
+  .grill/config.json                  {"theme": "system", "idleTimeoutMinutes": 120, "useHub": true, "artifactHubUrl": "..."}
+  .grill/sessions/<uuid>/session.json {id, title, status, updatedAt, server: {port, pid}, artifact: {url, id, page}, openRound}
   .grill/sessions/<uuid>/round-N.json {"questions": [{id, title, body, choices, answer}]}
 
 The status says whose turn it is, and only that side writes:
@@ -13,9 +13,11 @@ The status says whose turn it is, and only that side writes:
                        those answers are drafts: `wait` returns only after the submit
   session_finished     nobody
 
-If a grill hub (scripts/grill-hub in the repo) answers at hubUrl when the session starts, the session
-uses it instead of a local server: every change is pushed to the hub, and `wait` copies the user's
-answers (drafts included) back into .grill/. The choice is made once, at `start`, and never changes for that session.
+If an artifact hub (scripts/artifact-hub in the repo) answers at artifactHubUrl when the session starts, the
+session is an artifact there, of type "grill", instead of a local server: the page is published once, each
+round goes into the artifact's data, and `wait` copies the user's answers (drafts included) back into .grill/.
+The choice is made once, at `start`, and never changes for that session. Sessions started on the older grill
+hub (session.json has "hub" instead of "artifact") keep talking to it, at hubUrl, until they're finished.
 
 `finish` during the user's turn records the open round, and the first round of the next session in the
 folder gets the drafts back for the questions it asks again, so restarting a session doesn't lose them.
@@ -24,6 +26,7 @@ Commands: start --title "..." [--local], round <path>, wait [--timeout SECONDS],
 Python 3.8+, standard library only.
 """
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -42,8 +45,9 @@ from pathlib import Path
 
 AGENT, USER, FINISHED = "agent_writing_round", "user_writing_round", "session_finished"
 PAGE_DIR = Path(__file__).resolve().parent / "page"
-HUB_URL = "http://127.0.0.1:7171"
-DEFAULT_CONFIG = {"theme": "system", "idleTimeoutMinutes": 120, "useHub": True, "hubUrl": HUB_URL}
+HUB_URL = "http://127.0.0.1:7171"  # the older grill hub, only for sessions started on it
+ARTIFACT_HUB_URL = "http://127.0.0.1:7173"
+DEFAULT_CONFIG = {"theme": "system", "idleTimeoutMinutes": 120, "useHub": True, "artifactHubUrl": ARTIFACT_HUB_URL}
 HUB_RETRY_SECONDS = 300
 THEMES = ("system", "light", "dark")
 PORTS = range(4747, 4800)
@@ -119,9 +123,10 @@ def load_config(gdir):
         cfg["idleTimeoutMinutes"] = DEFAULT_CONFIG["idleTimeoutMinutes"]
     if not isinstance(cfg["useHub"], bool):
         cfg["useHub"] = DEFAULT_CONFIG["useHub"]
-    if not isinstance(cfg["hubUrl"], str) or not cfg["hubUrl"].strip():
-        cfg["hubUrl"] = HUB_URL
-    cfg["hubUrl"] = cfg["hubUrl"].strip().rstrip("/")
+    for key, default in (("hubUrl", HUB_URL), ("artifactHubUrl", ARTIFACT_HUB_URL)):
+        if not isinstance(cfg.get(key), str) or not cfg[key].strip():
+            cfg[key] = default
+        cfg[key] = cfg[key].strip().rstrip("/")
     return cfg
 
 
@@ -185,6 +190,8 @@ def copy_answers(sdir, n, questions):
 # ---------- server process (started and found by the CLI) ----------
 
 def server_url(s):
+    if s.get("artifact"):
+        return s["artifact"]["page"]
     if s.get("hub"):
         return s["hub"]["page"]
     return "http://localhost:{}/".format(s["server"]["port"])
@@ -259,16 +266,7 @@ def hub_call(base, method, path, body=None, timeout=5):
         except ValueError:
             return e.code, {}
     except (OSError, ValueError) as e:
-        raise HubDown("the grill hub at {} isn't answering ({})".format(base, e))
-
-
-def find_hub(cfg):
-    """The hub's info if one answers at hubUrl, else None."""
-    try:
-        code, info = hub_call(cfg["hubUrl"], "GET", "/api/ping", timeout=1)
-    except HubDown:
-        return None
-    return info if code == 200 and info.get("hub") else None
+        raise HubDown("the hub at {} isn't answering ({})".format(base, e))
 
 
 def project_name():
@@ -307,7 +305,103 @@ def flush_finished(gdir):
 
 def hub_down_message(e):
     return ("{}.\n\nThis session runs on the hub, so it can't continue until the hub is back. Start it "
-            "(for example `docker compose up -d` in scripts/grill-hub), then run:\n  {} wait".format(e, CMD))
+            "(for example `docker compose up -d` in scripts/artifact-hub), then run:\n  {} wait".format(e, CMD))
+
+
+# ---------- the artifact hub (when the session is an artifact there) ----------
+
+def find_artifact_hub(cfg):
+    """The artifact hub's info if one answers at artifactHubUrl, else None."""
+    try:
+        code, info = hub_call(cfg["artifactHubUrl"], "GET", "/api/ping", timeout=1)
+    except HubDown:
+        return None
+    return info if code == 200 and info.get("hub") == "artifact-hub" else None
+
+
+def artifact_page(theme):
+    """The page as one self-contained file: the artifact runs sandboxed, with no network, so the scripts and the
+    cooked patty go inline. The hub's frame shows the favicon, so the page's own icon links go."""
+    page = (PAGE_DIR / "index.html").read_text(encoding="utf-8").replace("{{theme}}", theme)
+    page = re.sub(r'<link rel="icon"[^>]*>\n?', "", page)
+    for name in ("pixel.js", "grill.js", "app.js"):
+        js = (PAGE_DIR / name).read_text(encoding="utf-8")
+        if name == "app.js":
+            svg = base64.b64encode((PAGE_DIR / "favicon-cooked.svg").read_bytes()).decode("ascii")
+            js = js.replace('src="favicon-cooked.svg"', 'src="data:image/svg+xml;base64,{}"'.format(svg))
+        tag = '<script src="{}"></script>'.format(name)
+        if tag not in page:
+            raise GrillError("page/index.html doesn't load {} the way artifact_page expects".format(name))
+        page = page.replace(tag, "<script>\n{}\n</script>".format(js.replace("</script", "<\\/script")))
+    return page
+
+
+def artifact_status(status):
+    return {AGENT: "working", USER: "awaiting", FINISHED: "done"}[status]
+
+
+def artifact_push(sdir):
+    """Send the session's state to the hub: the artifact's data is the same state the local server serves."""
+    s = read_json(session_file(sdir))
+    data = {"id": s["id"], "title": s["title"], "status": s["status"], "round": round_count(sdir),
+            "questions": latest_questions(sdir)}
+    code, info = hub_call(s["artifact"]["url"], "PATCH", "/api/artifacts/" + s["artifact"]["id"],
+                          {"data": data, "status": artifact_status(s["status"])})
+    if code != 200:
+        raise GrillError("the artifact hub refused the update: {}".format(info.get("error", code)))
+    return info
+
+
+def apply_answers(sdir, n, answers):
+    """Write answers ({id: {choice, text}}, from the hub) into round n in .grill/, keeping only valid ones.
+    Returns True if anything changed."""
+    data = read_json(round_file(sdir, n))
+    changed = False
+    for q in data["questions"]:
+        a = answers.get(q["id"]) if isinstance(answers, dict) else None
+        try:
+            a = clean_answer(q, a) if a is not None else None
+        except ValueError:
+            continue
+        if q.get("answer") != a:
+            q["answer"], changed = a, True
+    if changed:
+        write_json(round_file(sdir, n), data)
+    return changed
+
+
+def artifact_poll(sdir, s, n, seconds):
+    """Wait up to `seconds` on the hub. Copies the user's drafts for round n into .grill/, and once they submit,
+    their answers, handing the turn back to the agent. Returns True when the round is in."""
+    code, a = hub_call(s["artifact"]["url"], "GET", "/api/artifacts/{}/wait?timeout={}".format(s["artifact"]["id"], seconds),
+                       timeout=seconds + 15)
+    if code == 404:
+        raise GrillError("the session's artifact is gone from the artifact hub (deleted?). Finish this session with "
+                         "`{} finish` and start a new one.".format(CMD))
+    if code != 200:
+        raise GrillError("the artifact hub answered {}: {}".format(code, a.get("error", "")))
+    if a.get("expired"):
+        raise GrillError("the session's artifact expired on the hub. Finish this session with `{} finish`.".format(CMD))
+    if a["status"] == "done":
+        raise GrillError("the session was finished on the hub, so there are no answers to wait for")
+    draft = a.get("draft")
+    if isinstance(draft, dict) and draft.get("round") == n:
+        apply_answers(sdir, n, draft.get("answers"))
+    if a["status"] != "responded":
+        if a["status"] != "awaiting":
+            artifact_push(sdir)  # the hub has an older state than .grill/: send it again
+        return False
+    sent = (a.get("response") or {}).get("value")
+    if not (isinstance(sent, dict) and sent.get("round") == n and isinstance(sent.get("answers"), list)):
+        artifact_push(sdir)  # a submit for some other round: ask for this one again
+        return False
+    apply_answers(sdir, n, {x.get("id"): x for x in sent["answers"] if isinstance(x, dict)})
+    update_session(sdir, status=AGENT)
+    try:
+        artifact_push(sdir)
+    except HubDown:
+        pass  # the answers are in .grill/; the page catches up with the next round
+    return True
 
 
 # ---------- the agent's round file ----------
@@ -417,34 +511,36 @@ def cmd_start(args):
     current = active_session()
     if current:
         s = read_json(session_file(current))
-        url = server_url(s) if s.get("hub") or ping(s) else "(server stopped; `status` restarts it)"
+        url = server_url(s) if s.get("artifact") or s.get("hub") or ping(s) else "(server stopped; `status` restarts it)"
         raise GrillError(
             "a grill session is already active in this folder.\n"
             "  Title:  {}\n  Status: {} (round {})\n  URL:    {}\n\n"
             "To end it, run:\n  {} finish\n\nThen run start again.".format(
                 s["title"], s["status"], round_count(current), url, CMD))
     cfg = load_config(gdir)
-    hub = find_hub(cfg) if cfg["useHub"] and not args.local else None
+    hub = find_artifact_hub(cfg) if cfg["useHub"] and not args.local else None
+    flush_finished(gdir)
     sid = str(uuid.uuid4())
     sdir = gdir / "sessions" / sid
     sdir.mkdir(parents=True)
     session = {"id": sid, "title": title, "status": AGENT, "updatedAt": now(), "server": None}
-    if hub:
-        project = project_name()
-        session["hub"] = {"url": cfg["hubUrl"], "project": project,
-                          "page": "{}/{}/{}/".format(hub["publicUrl"].rstrip("/"), project, sid)}
     write_json(session_file(sdir), session)
     open_browser = not os.environ.get("GRILL_NO_BROWSER")
     if hub:
-        flush_finished(gdir)
         try:
-            hub_sync(sdir)
+            code, a = hub_call(cfg["artifactHubUrl"], "POST", "/api/artifacts", {
+                "title": title, "project": project_name(), "type": "grill", "html": artifact_page(cfg["theme"]),
+                "data": {"id": sid, "title": title, "status": AGENT, "round": 0, "questions": []}, "status": "working"},
+                timeout=15)
+            if code != 200:
+                raise GrillError("the artifact hub refused the session: {}".format(a.get("error", code)))
         except GrillError:
             shutil.rmtree(str(sdir), ignore_errors=True)
             raise
+        session = update_session(sdir, artifact={"url": cfg["artifactHubUrl"], "id": a["id"], "page": a["url"]})
         if open_browser:
-            webbrowser.open(session["hub"]["page"])
-        mode = "on the grill hub"
+            webbrowser.open(a["url"])
+        mode = "on the artifact hub"
         if not hub.get("devices"):
             mode += ("\n  No browser is paired with the hub yet. Run `{} connect` and show the user "
                      "the pairing code it prints.".format(CMD))
@@ -452,7 +548,7 @@ def cmd_start(args):
         session = ensure_server(sdir, open_browser=open_browser)
         mode = "locally"
         if cfg["useHub"] and not args.local:
-            mode += " (no grill hub answered at {})".format(cfg["hubUrl"])
+            mode += " (no artifact hub answered at {})".format(cfg["artifactHubUrl"])
     print("Grill session started: {}\n  URL: {}\n  Runs {}\n\n"
           "Next: write the first round to a JSON file and run:\n  {} round <path>".format(
               title, server_url(session), mode, CMD))
@@ -472,13 +568,18 @@ def cmd_round(args):
     except ValueError as e:
         raise GrillError("{} is not valid JSON: {}\n\nExpected shape:\n{}".format(path, e, ROUND_EXAMPLE))
     questions = validate_round(data, path)
-    if not s.get("hub"):
+    if not s.get("hub") and not s.get("artifact"):
         s = ensure_server(sdir)
     n = round_count(sdir) + 1
     carried = carry_drafts(sdir, questions) if n == 1 else 0
     write_json(round_file(sdir, n), {"questions": questions})
     update_session(sdir, status=USER)
-    if s.get("hub"):
+    if s.get("artifact"):
+        try:
+            artifact_push(sdir)
+        except HubDown as e:
+            raise GrillError("round {} is saved, but it didn't reach the hub: {}".format(n, hub_down_message(e)))
+    elif s.get("hub"):
         try:
             hub_sync(sdir)
         except HubDown as e:
@@ -529,10 +630,13 @@ def cmd_wait(args):
                   "Run the same command again now, and don't end your turn:\n"
                   "  {} wait --timeout {}".format(round_count(sdir), CMD, args.timeout))
             return 2
-        if s.get("hub"):
+        if s.get("hub") or s.get("artifact"):
             seconds = 25 if not deadline else max(1, min(25, int(deadline - time.time())))
             try:
-                hub_poll(sdir, s, round_count(sdir), seconds)
+                if s.get("artifact"):
+                    artifact_poll(sdir, s, round_count(sdir), seconds)
+                else:
+                    hub_poll(sdir, s, round_count(sdir), seconds)
             except HubDown as e:
                 # no fallback to a local server: keep trying for a while, then stop and say why.
                 # The outage start is saved, so repeated `wait --timeout` runs share one retry window
@@ -546,7 +650,7 @@ def cmd_wait(args):
                 continue
             if s.get("hubDownSince"):
                 update_session(sdir, hubDownSince=None)
-                print("The grill hub is back.", file=sys.stderr, flush=True)
+                print("The hub is back.", file=sys.stderr, flush=True)
             warned = False
             continue
         # the server may have shut down while idle; the user needs it to submit
@@ -563,7 +667,19 @@ def cmd_finish(args):
     open_round = round_count(sdir) if s["status"] == USER else None
     if open_round:
         update_session(sdir, openRound=open_round)
-    if s.get("hub"):
+    if s.get("artifact"):
+        try:
+            if open_round:
+                code, a = hub_call(s["artifact"]["url"], "GET", "/api/artifacts/" + s["artifact"]["id"])
+                draft = a.get("draft") if code == 200 else None
+                if isinstance(draft, dict) and draft.get("round") == open_round:
+                    apply_answers(sdir, open_round, draft.get("answers"))
+            update_session(sdir, status=FINISHED)
+            artifact_push(sdir)
+        except (HubDown, GrillError) as e:
+            update_session(sdir, status=FINISHED)
+            print("Note: {}, so the hub still shows this session as open.".format(e), file=sys.stderr)
+    elif s.get("hub"):
         if open_round:
             try:
                 code, state = hub_call(s["hub"]["url"], "GET", "/api/sessions/{}?round={}".format(s["id"], open_round))
@@ -591,7 +707,13 @@ def cmd_status(args):
         return
     s = read_json(session_file(sdir))
     where = ""
-    if s.get("hub"):
+    if s.get("artifact"):
+        try:
+            hub_call(s["artifact"]["url"], "GET", "/api/ping", timeout=2)
+            where = "\nRuns:   on the artifact hub"
+        except HubDown as e:
+            where = "\nRuns:   on the artifact hub, which isn't answering: {}".format(e)
+    elif s.get("hub"):
         try:
             hub_call(s["hub"]["url"], "GET", "/api/ping", timeout=2)
             where = "\nRuns:   on the grill hub"
@@ -613,12 +735,15 @@ def cmd_status(args):
 
 def cmd_connect(args):
     cfg = load_config(grill_dir())
+    # pair with the hub this folder's session runs on; that's the older grill hub only for sessions started there
+    sdir = active_session() if (grill_dir() / "sessions").is_dir() else None
+    legacy = sdir and read_json(session_file(sdir)).get("hub")
     try:
-        code, info = hub_call(cfg["hubUrl"], "POST", "/api/pair-codes", {})
+        code, info = hub_call(cfg["hubUrl"] if legacy else cfg["artifactHubUrl"], "POST", "/api/pair-codes", {})
     except HubDown as e:
-        raise GrillError("{}. Start the hub first: see scripts/grill-hub in the ang-skills repo.".format(e))
+        raise GrillError("{}. Start the hub first: see scripts/artifact-hub in the ang-skills repo.".format(e))
     if code != 200:
-        raise GrillError("the grill hub answered {}: {}".format(code, info.get("error", "")))
+        raise GrillError("the hub answered {}: {}".format(code, info.get("error", "")))
     print("Pairing code: {}\n  Open {} on the device and enter it. It works once and expires in {} minutes.\n\n"
           "Show the user this code and link.".format(info["code"], info["pairUrl"], info["expiresInMinutes"]))
 
@@ -824,7 +949,7 @@ def main():
     sub = p.add_subparsers(dest="command", metavar="command")
     sp = sub.add_parser("start", help="start a session, its server, and open the page")
     sp.add_argument("--title", required=True, help="short title shown on the page")
-    sp.add_argument("--local", action="store_true", help="use a local server even if a grill hub is running")
+    sp.add_argument("--local", action="store_true", help="use a local server even if an artifact hub is running")
     sp = sub.add_parser("round", help="send the next round from a JSON file")
     sp.add_argument("path", help="JSON file with {\"questions\": [{title, body, choices}]}")
     sp = sub.add_parser("wait", help="block until the user submits the round, then print the answers")
@@ -832,7 +957,7 @@ def main():
                     help="give up after this many seconds (exit code 2); set it below your shell tool's time limit")
     sub.add_parser("finish", help="end the session and stop its server")
     sub.add_parser("status", help="show the active session, its URL, and what to do next")
-    sub.add_parser("connect", help="print a one-time code to pair a browser with the grill hub")
+    sub.add_parser("connect", help="print a one-time code to pair a browser with the hub")
     sp = sub.add_parser("serve")  # internal: the background server
     sp.add_argument("sdir")
     sp.add_argument("--open", action="store_true")
