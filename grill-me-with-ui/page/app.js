@@ -206,6 +206,11 @@ const loader = '<span class="loader" aria-hidden="true"><i></i><i></i><i></i></s
 function apply(s) {
   document.body.classList.remove("is-loading");
   document.title = `${s.title} · Grill`;
+  const icon = s.status === "user_writing_round" ? "favicon" : "favicon-burger";
+  for (const link of document.querySelectorAll('link[rel="icon"]')) {
+    const href = `${icon}.${link.type === "image/svg+xml" ? "svg" : "png"}`;
+    if (link.getAttribute("href") !== href) link.setAttribute("href", href);
+  }
   $("#topic").textContent = s.title;
   sessionId = s.id;
   const empty = s.round === 0, finished = s.status === FINISHED;

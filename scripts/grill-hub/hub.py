@@ -310,16 +310,17 @@ paint();
 """
 
 
-def page(title, body, refresh=False, script=""):
+def page(title, body, refresh=False, script="", ready=False):
+    icon = "favicon" if ready else "favicon-burger"
     meta = '<meta http-equiv="refresh" content="15">' if refresh else ""
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">{}<title>{} · Grill hub</title>'
-            '<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">'
-            '<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg">'
+            '<link rel="icon" type="image/png" sizes="32x32" href="/{}.png">'
+            '<link rel="icon" type="image/svg+xml" sizes="any" href="/{}.svg">'
             '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
             '<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@500;600&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">'
             '<style>{}</style></head><body>{}{}</body></html>').format(
-                meta, html.escape(title), STYLE, body, "<script>{}</script>".format(script) if script else "").encode()
+                meta, html.escape(title), icon, icon, STYLE, body, "<script>{}</script>".format(script) if script else "").encode()
 
 
 def session_row(project, s, n):
@@ -349,7 +350,8 @@ def dashboard():
         for project, sessions in sorted(projects.items(), key=latest, reverse=True):
             rows = "".join(session_row(project, s, n) for s, n in sorted(sessions, key=lambda x: x[0]["updatedAt"], reverse=True))
             body += "<section><h2>{}</h2><ul>{}</ul></section>".format(html.escape(project), rows)
-    return page("Sessions", '<main class="list"><h1>Grill <span>hub</span></h1>{}</main>'.format(body), refresh=True)
+    ready = any(s["status"] == USER for sessions in projects.values() for s, _ in sessions)
+    return page("Sessions", '<main class="list"><h1>Grill <span>hub</span></h1>{}</main>'.format(body), refresh=True, ready=ready)
 
 
 def pair_page(nxt, error=""):
@@ -390,7 +392,7 @@ class PublicHandler(grill.Handler):
         url = urlsplit(self.path)
         path = url.path
         # Shared branding is public, including on the pairing page.
-        if path in ("/favicon.svg", "/favicon.png") and self.command == "GET":
+        if path in ("/favicon.svg", "/favicon.png", "/favicon-burger.svg", "/favicon-burger.png") and self.command == "GET":
             ctype = "image/svg+xml" if path.endswith(".svg") else "image/png"
             reply(self, 200, (grill.PAGE_DIR / path[1:]).read_bytes(), ctype)
             return None
