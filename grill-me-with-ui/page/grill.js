@@ -7,19 +7,16 @@
   const esc = (s) =>
     String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
-  // `code`, **bold**, *italic* and [links](https://…)
-  const inline = (s) =>
-    String(s)
-      .split(/(`[^`]+`)/)
-      .map((part, i) =>
-        i % 2
-          ? `<code>${esc(part.slice(1, -1))}</code>`
-          : esc(part)
-              .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-              .replace(/\*(.+?)\*/g, "<em>$1</em>")
-              .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      )
-      .join("");
+  // `code`, **bold**, *italic* and [links](https://…). Code spans are set aside first, so their text stays
+  // literal, then put back after the rest, so bold or a link can wrap them: **`a`, `b`**
+  const inline = (s) => {
+    const codes = [];
+    return esc(String(s).replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`))
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${esc(codes[n])}</code>`);
+  };
 
   // just enough markdown for question bodies: paragraphs, lists, code blocks, headings as bold lines
   function md(src) {
