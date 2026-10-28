@@ -413,6 +413,14 @@ const fitTyping = () => {
   lastH = h;
 };
 (window.visualViewport || window).addEventListener("resize", fitTyping);
+// on artifact-hub the keyboard covers the frame without resizing it, and the hub reports how much: the same
+// "keyboard went away without a blur" check, on the covered height instead
+let lastCovered = 0;
+addEventListener("artifactviewport", (e) => {
+  const covered = e.detail.bottom;
+  if (typingIn && covered < 40 && lastCovered - covered > 120) document.activeElement.blur();
+  lastCovered = covered;
+});
 // runs `done` once the page is back to full height, or after 600ms if it never gets there
 function afterKeyboardCloses(done) {
   const open = () => innerHeight < fullHeight - 80;

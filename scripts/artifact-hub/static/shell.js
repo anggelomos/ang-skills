@@ -37,13 +37,37 @@
     if (e.source !== frame.contentWindow || !m || m.artifactHub !== "hello" || !token || m.token !== token) return;
     // a frame that reloads itself says hello again with the same token: give it a fresh port
     if (port) port.close();
+    lastInsets = "";
     const ch = new MessageChannel();
     port = ch.port1;
     port.onmessage = fromFrame;
     e.source.postMessage({ artifactHub: "port" }, "*", [ch.port2]);
     lastSent = forFrame(state);
     port.postMessage({ type: "state", state: lastSent });
+    sendViewport();
   });
+
+  // how much of the frame the phone keyboard (or anything else outside the visual viewport) covers, top and
+  // bottom. The frame keeps its size while the keyboard is up, so the artifact can't see this itself.
+  // Pinch zoom also shrinks the visual viewport, so a zoomed-in page reports nothing covered
+  let lastInsets = "";
+  function sendViewport() {
+    const vv = window.visualViewport;
+    if (!port || !vv) return;
+    const r = frame.getBoundingClientRect(), zoomed = vv.scale > 1.01;
+    const insets = {
+      top: zoomed ? 0 : Math.max(0, Math.round(vv.offsetTop - r.top)),
+      bottom: zoomed ? 0 : Math.max(0, Math.round(r.bottom - vv.offsetTop - vv.height)),
+    };
+    if (JSON.stringify(insets) === lastInsets) return;
+    lastInsets = JSON.stringify(insets);
+    port.postMessage({ type: "viewport", ...insets });
+  }
+  if (window.visualViewport) {
+    visualViewport.addEventListener("resize", sendViewport);
+    visualViewport.addEventListener("scroll", sendViewport);
+  }
+  window.addEventListener("resize", sendViewport);
 
   async function post(path, body) {
     let r;

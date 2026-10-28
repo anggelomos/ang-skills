@@ -8,6 +8,10 @@
 //   Artifact.onUpdate(fn)       fn(state) now and on every change: new data from the agent, a status change,
 //                               a draft saved on another device. Returns a function that unsubscribes
 //
+// While a phone keyboard is up it covers the bottom of the frame (the frame isn't resized). The covered parts are
+// the CSS variables --artifact-inset-top and --artifact-inset-bottom on <html>, 0px otherwise, and every change
+// fires an "artifactviewport" event on window with {top, bottom} in its detail.
+//
 // Plain <form>s need no code: a submit is sent as {form, values} JSON, and what's typed is kept as a draft
 // and filled back in on the next load. Mark a form data-artifact="off" to leave it alone.
 (function () {
@@ -43,6 +47,11 @@
         restoreForms();
       }
       emit();
+    } else if (m.type === "viewport") {
+      const top = Math.max(0, Number(m.top) || 0), bottom = Math.max(0, Number(m.bottom) || 0);
+      document.documentElement.style.setProperty("--artifact-inset-top", top + "px");
+      document.documentElement.style.setProperty("--artifact-inset-bottom", bottom + "px");
+      window.dispatchEvent(new CustomEvent("artifactviewport", { detail: { top, bottom } }));
     } else if (m.type === "result" && pending.has(m.id)) {
       const p = pending.get(m.id);
       pending.delete(m.id);

@@ -39,6 +39,8 @@ The hub injects `artifact.js` into every private artifact. It gives the page:
 | `Artifact.submit(value)` | Sends a response. `artifact-hub wait` returns it. |
 | `Artifact.onUpdate(fn)` | Calls `fn(state)` now and on every change: new data, a new status, a draft from another device. |
 
+A phone keyboard covers the bottom of the frame instead of resizing it (resizing the frame froze touch input on Android Chrome). The covered part is in the CSS variables `--artifact-inset-top` and `--artifact-inset-bottom` on `<html>`, `0px` without a keyboard, and each change fires an `artifactviewport` event on `window` with `{top, bottom}` in `detail`. To keep something above the keyboard, use `bottom: var(--artifact-inset-bottom, 0px)`.
+
 Plain `<form>`s need no code. A submit goes to the agent as `{"form": "<name or id>", "values": {...}}`; repeated names become arrays. What's typed is saved as a draft and filled back in on the next load. Mark a form `data-artifact="off"` to leave it alone.
 
 Public artifacts get a stub with the same API: `data` works, `save` and `submit` fail.
