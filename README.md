@@ -3,6 +3,7 @@
 - **[grill-me-with-ui](#grill-me-with-ui):** Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me), but you answer each round in a web app with clickable answers, hover-to-dictate and keyboard shortcuts. With the optional [artifact hub](scripts/artifact-hub/), you can answer from your phone or another computer.
 - **[generate-artifact](#generate-artifact):** Agents build a self-contained HTML artifact (a report, a mockup, a form) and publish it to your [artifact hub](scripts/artifact-hub/): private to your paired devices unless you ask for a public link. Forms and the `artifact.js` SDK send your answers back to the agent.
 - **[notify-grokbot](#grokbot-ping):** Send bot updates only from coding sessions that explicitly opt in. Hooks ping when an enabled session finishes a turn.
+- **[lean-list](lean-list/SKILL.md):** Ask for a "lean list" and get a numbered list where each item is one short, plain sentence.
 
 ## Install
 
