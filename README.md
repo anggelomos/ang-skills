@@ -4,6 +4,7 @@
 - **[generate-artifact](#generate-artifact):** Agents build a self-contained HTML artifact (a report, a mockup, a form) and publish it to your [artifact hub](scripts/artifact-hub/): private to your paired devices unless you ask for a public link. Forms and the `artifact.js` SDK send your answers back to the agent.
 - **[notify-grokbot](#grokbot-ping):** Send bot updates only from coding sessions that explicitly opt in. Hooks ping when an enabled session finishes a turn.
 - **[lean-list](lean-list/SKILL.md):** Ask for a "lean list" and get a numbered list where each item is one short, plain sentence.
+- **[edit-notion-document](edit-notion-document/SKILL.md):** Edit a Notion page with tracked changes: green additions, yellow modifications with the original in a comment, red `[ deleted ]` and `[ moved ]` markers, and replies to your comments.
 
 ## Install
 
